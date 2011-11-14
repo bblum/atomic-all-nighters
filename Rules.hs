@@ -1,7 +1,7 @@
 -- Rules for checking
 -- Author: Ben Blum <bblum@andrew.cmu.edu>
 
-module Rules (Context,Annotation,effect,subtype,satisfies) where
+module Rules (Context,Annotation,effect,subtype,satisfies,intersect,disjoin) where
 
 data Context = Nested Int | Infinity deriving (Show,Eq) -- user-defined
 
@@ -46,3 +46,18 @@ subtype (Annotation (Rule r1,_)) (Annotation (Rule r2,_)) = r2 <= r1
 -- Does the provided code context satisfy the annotation?
 satisfies :: Annotation -> Context -> Bool
 satisfies (Annotation (Rule r,_)) c = r <= c
+
+-- For intersect and disjoin, below.
+merge :: (Context -> Context -> Context)
+         -> Annotation -> Annotation -> Maybe Annotation
+merge f (Annotation (Rule r1, e1)) (Annotation (Rule r2, e2)) =
+    if e1 == e2 then Just $ Annotation (Rule $ f r1 r2, e1) else Nothing
+
+-- Gives an annotation that is a subtype of both inputs.
+intersect :: Annotation -> Annotation -> Maybe Annotation
+intersect = merge max
+
+-- Gives an annotation that both inputs are subtypes of.
+disjoin :: Annotation -> Annotation -> Maybe Annotation
+disjoin = merge min
+

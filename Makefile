@@ -8,6 +8,6 @@ EFILES=bin/aaa
 all: $(EFILES)
 aaa: bin/aaa
 
-bin/aaa: Main.hs
+bin/aaa: Main.hs Check.hs Rules.hs
 	mkdir -p bin
 	$(HSMAKE) $< -o $@
