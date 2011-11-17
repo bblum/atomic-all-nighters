@@ -1,7 +1,9 @@
 -- Rules for checking
 -- Author: Ben Blum <bblum@andrew.cmu.edu>
 
-module Rules (Context,Annotation,effect,subtype,satisfies,intersect,disjoin) where
+module Rules 
+--(Context,Annotation,effect,subtype,satisfies,intersect,disjoin,entryContext,entryDefault)
+where
 
 data Context = Nested Int | Infinity deriving (Show,Eq) -- user-defined
 
@@ -30,14 +32,16 @@ instance Show Effect where -- user-defined
     show (IncDec x) = "[unknown effect: " ++ show x ++ "]"
 
 instance Show Annotation where
-    show (Annotation (r,e)) = "AAA(" ++ show r ++ ", " ++ show e ++ ")"
+    show (Annotation (r, IncDec 0)) = show r
+    show (Annotation (r,e)) = show r ++ ", " ++ show e
 
 -- Change the context somehow.
-effect :: Annotation -> Context -> Context
-effect (Annotation (_,Enable)) _ = Nested 0
-effect (Annotation (_,Disable)) _ = Infinity
-effect (Annotation (_,_)) Infinity = Infinity
-effect (Annotation (_,IncDec y)) (Nested x) = Nested $ x + y
+effect :: Annotation -> Context -> Maybe Context -- user-defined
+effect (Annotation (_,Enable)) _ = Just $ Nested 0
+effect (Annotation (_,Disable)) _ = Just Infinity
+effect (Annotation (_,_)) Infinity = Just Infinity
+effect (Annotation (_,IncDec y)) (Nested x) =
+    if x + y < 0 then Nothing else Just $ Nested $ x + y
 
 -- Is the second argument a subtype of the first? (is assignment legal?)
 subtype :: Annotation -> Annotation -> Bool
@@ -55,9 +59,16 @@ merge f (Annotation (Rule r1, e1)) (Annotation (Rule r2, e2)) =
 
 -- Gives an annotation that is a subtype of both inputs.
 intersect :: Annotation -> Annotation -> Maybe Annotation
-intersect = merge max
+intersect = merge min
 
 -- Gives an annotation that both inputs are subtypes of.
 disjoin :: Annotation -> Annotation -> Maybe Annotation
-disjoin = merge min
+disjoin = merge max
 
+-- Gives the most restrictive context that a function may be called from.
+entryContext :: Annotation -> Context
+entryContext (Annotation (Rule r, _)) = r
+
+-- Gives a default "assume the best" context.
+entryDefault :: Context -- user-defined
+entryDefault = Nested 0
