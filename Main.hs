@@ -3,8 +3,10 @@
 
 module Main where
 
+import Control.Monad (when)
 import Language.C
 import Language.C.System.GCC
+import System.Exit
 
 import Check
 
@@ -20,5 +22,9 @@ parseFile input_file =
 -- TODO: cmdline options
 main :: IO ()
 main =
-    do ast <- parseFile "noob.c"
+    do ast <- parseFile "onion-station.c"
        print $ pretty ast
+       let msgs = check ast
+       mapM_ putStrLn msgs
+       when (not $ null msgs) $ exitWith $ ExitFailure 1
+
