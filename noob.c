@@ -1,17 +1,12 @@
 #ifdef ATOMIC_ALL_NIGHTERS
 /* function annotations */
-#define MIGHT_SLEEP         __attribute__((might_sleep))
+#define MIGHT_SLEEP         __attribute__((atomic_all_nighters("might_sleep")))
 
 /* context-changing annotations */
-#define ENTER_ATOMIC        __attribute__((enter_atomic))
-#define EXIT_ATOMIC         __attribute__((exit_atomic))
-#define ENTER_ATOMIC_NESTED __attribute__((enter_atomic_nested))
-#define EXIT_ATOMIC_NESTED  __attribute__((exit_atomic_nested))
-
-
-/* context types (really, function pointer types.) */
-#define MUSTNT_SLEEP __attribute__((mustnt_sleep))
-/* is MAY_SLEEP the default? what about function pointers that change the ctx? */
+#define ENTER_ATOMIC        __attribute__((atomic_all_nighters("wont_sleep","force_disable")))
+#define EXIT_ATOMIC         __attribute__((atomic_all_nighters("wont_sleep","force_enable")))
+#define ENTER_ATOMIC_NESTED __attribute__((atomic_all_nighters("wont_sleep","enter_nested")))
+#define EXIT_ATOMIC_NESTED  __attribute__((atomic_all_nighters("wont_sleep","exit_nested")))
 
 #else
 #define MIGHT_SLEEP
@@ -19,7 +14,6 @@
 #define EXIT_ATOMIC
 #define ENTER_ATOMIC_NESTED
 #define EXIT_ATOMIC_NESTED
-#define MUSTNT_SLEEP
 #endif
 
 struct mutex;
@@ -49,5 +43,5 @@ int main() {
 	spin_unlock(b);
 	z++;
 	mutex_unlock(m);
-	return 0;
+	// return 0;
 }
