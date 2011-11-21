@@ -1,53 +1,48 @@
 #ifdef ATOMIC_ALL_NIGHTERS
 /* function annotations */
-#define MIGHT_SLEEP         __attribute__((might_sleep))
-#define DOESNT_SLEEP        __attribute__((doesnt_sleep))
+#define MAY_SLEEP         __attribute__((atomic_all_nighters("might_sleep")))
+#define WONT_SLEEP        __attribute__((atomic_all_nighters("wont_sleep")))
 
 /* context-changing annotations */
-#define ENTER_ATOMIC        __attribute__((enter_atomic))
-#define EXIT_ATOMIC         __attribute__((exit_atomic))
-#define ENTER_ATOMIC_NESTED __attribute__((enter_atomic_nested))
-#define EXIT_ATOMIC_NESTED  __attribute__((exit_atomic_nested))
-
-
-/* context types (really, function pointer types.) */
-#define MUSTNT_SLEEP __attribute__((mustnt_sleep))
-#define MAY_SLEEP __attribute__((may_sleep))
-/* is MAY_SLEEP the default? what about function pointers that change the ctx? */
+#define ENTER_ATOMIC        __attribute__((atomic_all_nighters("wont_sleep","force_enable")))
+#define EXIT_ATOMIC         __attribute__((atomic_all_nighters("wont_sleep","force_disable")))
+#define ENTER_ATOMIC_NESTED __attribute__((atomic_all_nighters("wont_sleep","enter_nested")))
+#define EXIT_ATOMIC_NESTED  __attribute__((atomic_all_nighters("wont_sleep","exit_nested")))
 
 #else
-#define MIGHT_SLEEP
-#define DOESNT_SLEEP
+#define MAY_SLEEP
+#define WONT_SLEEP
 #define ENTER_ATOMIC
 #define EXIT_ATOMIC
 #define ENTER_ATOMIC_NESTED
 #define EXIT_ATOMIC_NESTED
-#define MUSTNT_SLEEP
-#define MAY_SLEEP
 #endif
 
 struct mutex;
 struct spinlock;
 
-void mutex_lock(struct mutex *mp) MIGHT_SLEEP;
-void mutex_unlock(struct mutex *mp) MIGHT_SLEEP;
-void mutex_assert_is_locked(struct mutex *mp) DOESNT_SLEEP;
+void MAY_SLEEP mutex_lock(struct mutex *mp);
+void MAY_SLEEP mutex_unlock(struct mutex *mp);
+void WONT_SLEEP mutex_assert_is_locked(struct mutex *mp);
 
-void spin_lock(struct spinlock *sp) ENTER_ATOMIC_NESTED;
-void spin_unlock(struct spinlock *sp) EXIT_ATOMIC_NESTED;
+void ENTER_ATOMIC_NESTED spin_lock(struct spinlock *sp);
+void EXIT_ATOMIC_NESTED spin_unlock(struct spinlock *sp);
 
 struct spinlock *a;
 struct mutex *m;
 
-void g(void (*x)(struct mutex *) MUSTNT_SLEEP) DOESNT_SLEEP
+void WONT_SLEEP g(void (*x)(struct mutex *) WONT_SLEEP)
 {
 	spin_lock(a);
 	x(m);
 	spin_unlock(a);
 }
 
-int main() MIGHT_SLEEP {
-	void (*f)(void (*)(struct mutex *) MAY_SLEEP) MUSTNT_SLEEP = g;
+int MAY_SLEEP main()
+{
+	// This should fail.
+	// Argument types must contravary, not covary.
+	void (*f)(void (*)(struct mutex *) MAY_SLEEP) WONT_SLEEP = g;
 	f(mutex_lock);
-	return 0;
+	// return 0;
 }
