@@ -31,12 +31,26 @@ data TypeName = VarName Ident | StructName Ident | TypedefName Ident
 data MessageLine a = (Show a) => M String a
 
 data Checker = Checker {
+    -- The current context of the code
     context :: Context,
+    -- identifier mappings
     types :: Map.Map TypeName Type,
-    msgs :: [String]
+    -- output
+    msgs :: [String],
+    -- value is "Left gs" if the label hasn't been hit yet (a list of all
+    -- contexts that the label is entered with), and "Right g" if it has (the
+    -- context that was decided upon for its entry, for future backwards gotos)
+    labels :: Map.Map Ident (Either [Context] Context),
+    -- break and continue targets. these represent the contexts encountered at
+    -- each break and continue statement, to be collected by the call at the
+    -- construct they belong to.
+    breaks :: [[Context]],
+    continues :: [[Context]],
+    -- The end contexts for all the case branches in a switch statement.
+    switches :: [[Context]]
 }
 
-defaultChecker = Checker undefined Map.empty []
+defaultChecker = Checker undefined Map.empty [] Map.empty [] [] []
 
 --
 -- Instants.
@@ -54,6 +68,113 @@ instance Show Type where
 
 instance Show (MessageLine a) where
     show (M str a) = str ++ " \t" ++ show a
+
+--
+-- Flow control helpers.
+--
+
+enterLoop :: State Checker ()
+enterLoop =
+    modify (\s -> s { breaks = []:(breaks s), continues = []:(continues s) })
+
+-- Returns the broken contexts and the continued contexts, respectively.
+exitLoop :: State Checker ([Context], [Context])
+exitLoop =
+    do bs <- breaks <$> get
+       cs <- continues <$> get
+       case (bs,cs) of
+           (b:bs', c:cs') ->
+               do modify (\s -> s { breaks = bs', continues = cs' })
+                  return (b,c)
+           _ -> error "inconsistent break/continue stack exiting loop"
+
+breakLoop :: State Checker ()
+breakLoop =
+    do g <- getContext
+       bs <- breaks <$> get
+       case bs of
+           (b:bs') -> modify (\s -> s { breaks = (g:b):bs' })
+           [] -> error "inconsistent break stack in break"
+
+continueLoop :: State Checker ()
+continueLoop =
+    do g <- getContext
+       cs <- continues <$> get
+       case cs of
+           (c:cs') -> modify (\s -> s { continues = (g:c):cs' })
+           [] -> error "inconsistent continue stack in continue"
+
+enterSwitch :: State Checker ()
+enterSwitch =
+    modify (\s -> s { breaks = []:(breaks s), switches = []:(switches s) })
+
+exitSwitch :: State Checker [Context]
+exitSwitch =
+    do bs <- breaks <$> get
+       case bs of
+           (b:bs') -> do modify (\s -> s { breaks = bs' })
+                         return b
+           [] -> error "inconsistent break stack exiting switch"
+
+exitCase :: Context -> Context -> State Checker ()
+exitCase g0 g =
+    do ss <- switches <$> get
+       case ss of
+           (gs:ss') -> do modify (\s -> s { switches = (g:gs):ss' })
+           [] -> error "inconsistent switches stack exiting case"
+       setContext g0 -- XXX FIXME: this silently breaks in fall-through cases
+
+checkMergeContexts :: NodeInfo -> Context -> [Context] -> State Checker ()
+checkMergeContexts nobe g0 gs =
+    when (any (/= g0) gs) $
+        warn nobe "merging flow" $
+            [M "current context" g0] ++ map (M "incoming context") gs
+            ++ [M "most restrictive" $ minimum $ g0:gs]
+
+mergeContexts :: NodeInfo -> Context -> [Context] -> State Checker ()
+mergeContexts nobe g0 gs =
+    do let g = minimum $ g0:gs
+       checkMergeContexts nobe g0 gs
+       modify (\s -> s { context = g })
+
+checkBackEdge :: NodeInfo -> Context -> Context -> State Checker ()
+checkBackEdge nobe g0 g =
+    do g <- getContext
+       when (g < g0) $
+           warn nobe "backward jump with a more restrictive context"
+               [M "old context" g0, M "incoming context" g]
+
+gotoLabel :: NodeInfo -> Context -> Ident -> State Checker ()
+gotoLabel nobe g name =
+    do ls <- labels <$> get
+       case Map.lookup name ls of
+           Just (Left gs) ->
+               -- Append the new context to the list of incoming contexts.
+               do modify (\s -> s { labels = Map.insert name (Left $ g:gs) ls })
+                  info nobe "forward goto to label with context"
+                       [M "target" $ show name, M "incoming" $ show g]
+           Just (Right g0) ->
+               -- Check the new context against the already decided-upon one.
+               checkBackEdge nobe g0 g
+           Nothing ->
+               do modify (\s -> s { labels = Map.insert name (Left [g]) ls})
+                  info nobe "forward goto to label with context"
+                       [M "target" $ show name, M "incoming" $ show g]
+
+meetLabel :: NodeInfo -> Context -> Ident -> State Checker ()
+meetLabel nobe g0 name =
+    do ls <- labels <$> get
+       case Map.lookup name ls of
+           Just (Left gs) ->
+               do let g = minimum $ g0:gs
+                  mergeContexts nobe g0 gs
+                  modify (\s -> s { labels = Map.insert name (Right g) ls})
+           Just (Right _) ->
+               do err nobe "meeting an already-met label (duplicate label?)"
+                      [M "label name" name]
+                  modify (\s -> s { labels = Map.insert name (Right g0) ls})
+           Nothing ->
+               modify (\s -> s { labels = Map.insert name (Right g0) ls})
 
 --
 -- Helpers.
@@ -89,6 +210,7 @@ restoreState :: Checker -> State Checker ()
 restoreState oldstate =
     modify (\s -> s { context = context oldstate, types = types oldstate })
 
+-- TODO: deprecate
 mergeState :: NodeInfo -> Checker -> Checker -> State Checker ()
 mergeState nobe state1 state2 =
     let (g1,g2) = (context state1, context state2)
@@ -97,6 +219,39 @@ mergeState nobe state1 state2 =
 
 setContext :: Context -> State Checker ()
 setContext g = modify (\s -> s { context = g })
+
+getTypes :: State Checker (Map.Map TypeName Type)
+getTypes = types <$> get
+
+setTypes :: Map.Map TypeName Type -> State Checker ()
+setTypes ts = modify (\s -> s { types = ts })
+
+--
+-- Messaging
+--
+
+emptyMsg = [] :: [String]
+
+msg :: (Show a) => String -> NodeInfo -> String -> [a] -> State Checker ()
+msg prefix nobe str noobs =
+    let (row,col) = (posRow $ posOfNode nobe, posColumn $ posOfNode nobe)
+        mess0 = prefix ++ ": at " ++ fileOfNode nobe ++ ":"
+                ++ (show row) ++ "," ++ (show col) ++ ": " ++ str
+        mess = foldl (\output noob -> output ++ "\n\t" ++ show noob) mess0 noobs
+    in modify (\s -> s { msgs = mess:(msgs s) })
+
+err :: (Show a) => NodeInfo -> String -> [a] -> State Checker ()
+err = msg "ERROR" -- TODO: make this fail
+
+warn :: (Show a) => NodeInfo -> String -> [a] -> State Checker ()
+warn = msg "warning"
+
+info :: (Show a) => NodeInfo -> String -> [a] -> State Checker ()
+info = msg "(info)"
+
+--
+-- Verification.
+--
 
 -- if doDisjoin, then disjoin the types; else, intersect the types.
 -- this comes into play when doing arrow annotations.
@@ -134,29 +289,6 @@ mergeType doDisjoin nobe t1@(Arrow args1 ret1 a1) t2@(Arrow args2 ret2 a2) =
                   return $ Arrow args ret Nothing
 mergeType doDisjoin nobe t1 t2 =
     do warn nobe "type mismatch during merge" [t1,t2]; return Base
-
-emptyMsg = [] :: [String]
-
-msg :: (Show a) => String -> NodeInfo -> String -> [a] -> State Checker ()
-msg prefix nobe str noobs =
-    let (row,col) = (posRow $ posOfNode nobe, posColumn $ posOfNode nobe)
-        mess0 = prefix ++ ": at " ++ fileOfNode nobe ++ ":"
-                ++ (show row) ++ "," ++ (show col) ++ ": " ++ str
-        mess = foldl (\output noob -> output ++ "\n\t" ++ show noob) mess0 noobs
-    in modify (\s -> s { msgs = mess:(msgs s) })
-
-err :: (Show a) => NodeInfo -> String -> [a] -> State Checker ()
-err = msg "ERROR" -- TODO: make this fail
-
-warn :: (Show a) => NodeInfo -> String -> [a] -> State Checker ()
-warn = msg "warning"
-
-info :: (Show a) => NodeInfo -> String -> [a] -> State Checker ()
-info = msg "(info)"
-
---
--- Verification.
---
 
 -- TODO: need to worry about extra pointer indirections around arrows? &malloc
 -- The bool argument expresses whether subtyping is allowed.
@@ -450,21 +582,86 @@ checkDesignator _ = error "designators not supported yet" -- TODO
 
 -- Statemence.
 checkStat :: CStat -> State Checker Type
-checkStat (CLabel name s attrs nobe) = error "label not supported"
-checkStat (CCase e s nobe) = error "case not supported"
-checkStat (CCases e1 e2 s nobe) = error "cases not supported"
-checkStat (CDefault s nobe) = error "default not supported"
+checkStat (CLabel name s attrs nobe) =
+    do g0 <- getContext
+       meetLabel nobe g0 name
+       checkStat s
+checkStat (CCase e s nobe) =
+    do g0 <- getContext
+       checkExpr_ e
+       checkStat_ s
+       g <- getContext
+       exitCase g0 g
+       return Base
+checkStat (CCases e1 e2 s nobe) =
+    do g0 <- getContext
+       checkExpr_ e1
+       checkExpr_ e2
+       checkStat_ s
+       g <- getContext
+       exitCase g0 g
+       return Base
+checkStat (CDefault s nobe) =
+    do g0 <- getContext
+       checkStat_ s
+       g <- getContext
+       exitCase g0 g
+       return Base
 checkStat (CExpr e' nobe) = maybe (return Base) checkExpr e'
-checkStat (CCompound labels blox nobe) = mapM checkBlockItem blox >> return Base
-checkStat (CIf e s1 s2' nobe) = error "if not supported"
-checkStat (CSwitch e s nobe) = error "switch not supported"
-checkStat (CWhile e s isDoWhile nobe) = error "while not supported"
-checkStat (CFor e1'' e2' e3' s nobe) = error "for not supported"
-checkStat (CGoto name nobe) = error "goto not supported"
-checkStat (CGotoPtr e nobe) = error "gotoptr not supported"
-checkStat (CCont nobe) = error "continue not supported"
-checkStat (CBreak nobe) = error "break not supported"
-checkStat (CReturn e' nobe) = error "return not supported"
+checkStat (CCompound labels blox nobe) = mapM checkBlockItem blox >> return Base -- TODO: types here
+checkStat (CIf e s1 s2' nobe) =
+    do checkExpr_ e
+       g0 <- getContext
+       undefined -- TODO
+checkStat (CSwitch e s nobe) =
+    do checkExpr_ e
+       g0 <- getContext
+       enterSwitch
+       checkStat_ s
+       gs <- exitSwitch
+       mergeContexts nobe g0 gs
+       return Base
+checkStat (CWhile e s isDoWhile nobe) =
+    do g0 <- getContext
+       when (not isDoWhile) $ checkExpr_ e
+       enterLoop
+       checkStat_ s
+       (bs,cs) <- exitLoop
+       when (isDoWhile) $ checkExpr_ e
+       g <- getContext
+       checkMergeContexts nobe g0 cs -- continues go backwards
+       checkBackEdge nobe g0 g
+       mergeContexts nobe g bs -- breaks go forwards
+       return Base
+checkStat (CFor e1'' e2' e3' s nobe) =
+    do ts <- getTypes
+       case e1'' of
+           (Left Nothing) -> return ()
+           (Left (Just e)) -> checkExpr_ e
+           (Right d) -> checkDecl_ d
+       g0 <- getContext
+       maybe (return ()) checkExpr_ e2'
+       enterLoop
+       checkStat_ s
+       (bs,cs) <- exitLoop
+       g1 <- getContext
+       mergeContexts nobe g1 cs -- continues go forwards
+       maybe (return ()) checkExpr_ e3'
+       g2 <- getContext
+       checkBackEdge nobe g0 g2
+       mergeContexts nobe g2 bs -- breaks go even more forwards
+       return Base
+checkStat (CGoto name nobe) =
+    do g <- getContext
+       gotoLabel nobe g name
+       return Base
+checkStat (CGotoPtr e nobe) =
+    do warn nobe "dynamic pointer goto being ignored." emptyMsg
+       checkExpr_ e
+       return Base
+checkStat (CCont nobe) = continueLoop >> return Base
+checkStat (CBreak nobe) = breakLoop >> return Base
+checkStat (CReturn e' nobe) = maybe (return Base) checkExpr e'
 checkStat (CAsm asm nobe) = checkAsmStmt asm >> return Base
 
 checkStat_ s = checkStat s >> return ()
