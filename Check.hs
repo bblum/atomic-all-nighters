@@ -247,7 +247,8 @@ warn :: (Show a) => NodeInfo -> String -> [a] -> State Checker ()
 warn = msg "warning"
 
 info :: (Show a) => NodeInfo -> String -> [a] -> State Checker ()
-info = msg "(info)"
+-- info = msg "(info)"
+info _ _ _ = return () -- TODO: better msg datatype
 
 --
 -- Verification.
@@ -608,11 +609,21 @@ checkStat (CDefault s nobe) =
        exitCase g0 g
        return Base
 checkStat (CExpr e' nobe) = maybe (return Base) checkExpr e'
-checkStat (CCompound labels blox nobe) = mapM checkBlockItem blox >> return Base -- TODO: types here
+checkStat (CCompound labels blox nobe) =
+    do ts <- getTypes
+       mapM_ checkBlockItem blox
+       setTypes ts
+       return Base
 checkStat (CIf e s1 s2' nobe) =
     do checkExpr_ e
        g0 <- getContext
-       undefined -- TODO
+       checkStat_ s1
+       g1 <- getContext
+       setContext g0
+       maybe (return ()) checkStat_ s2'
+       g2 <- getContext
+       mergeContexts nobe g1 [g2]
+       return Base
 checkStat (CSwitch e s nobe) =
     do checkExpr_ e
        g0 <- getContext
