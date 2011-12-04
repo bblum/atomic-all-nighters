@@ -21,6 +21,7 @@ data Type = Base
           | Arrow [Type] Type (Maybe Annotation)
           | Pointer Type
           | Struct (Map.Map Ident Type)
+          | IncompleteStruct
           deriving Eq
 
 data TypeName = VarName Ident | StructName Ident | TypedefName Ident
@@ -65,6 +66,7 @@ instance Show Type where
            ++ " {" ++ maybe "???" show a' ++ "})"
     show (Pointer t) = show t ++ "*"
     show (Struct contence) = "struct {" ++ show contence ++ "}"
+    show (IncompleteStruct) = "struct"
 
 instance Show (MessageLine a) where
     show (M str a) = str ++ " \t" ++ show a
@@ -196,8 +198,16 @@ getTypeOrBase nobe name =
 
 addType :: NodeInfo -> TypeName -> Type -> State Checker ()
 addType nobe name t =
-    do present <- Map.member name <$> types <$> get
-       when present $ warn nobe "type is being shadowed" [name]
+    do prior' <- Map.lookup name <$> types <$> get
+       case prior' of
+           Just IncompleteStruct ->
+               info nobe "incomplete struct being defined"
+                   [M "named" $ show name, M "contence" $ show t]
+           Just t0 ->
+               warn nobe "type is being shadowed"
+                   [M "named" $ show name, M "old type" $ show t0,
+                    M "new type" $ show t]
+           Nothing -> return ()
        modify (\s -> s { types = Map.insert name t $ types s })
 
 getState :: State Checker Checker
@@ -288,6 +298,8 @@ mergeType doDisjoin nobe t1@(Arrow args1 ret1 a1) t2@(Arrow args2 ret2 a2) =
            (Nothing, Nothing) ->
                do warn nobe "missing annotation for merge on both branches" [t1,t2]
                   return $ Arrow args ret Nothing
+mergeType doDisjoin nobe IncompleteStruct t2 = mergeType doDisjoin nobe Base t2
+mergeType doDisjoin nobe t1 IncompleteStruct = mergeType doDisjoin nobe t1 Base
 mergeType doDisjoin nobe t1 t2 =
     do warn nobe "type mismatch during merge" [t1,t2]; return Base
 
@@ -327,6 +339,10 @@ verifyAssign nobe subtyping (Struct m1) (Struct m2) =
     mapM_ (uncurry $ verifyAssign nobe subtyping) -- Structs aren't quite refs.
           (zip (Map.elems m1) (Map.elems m2))
 verifyAssign nobe subtyping Base Base = return ()
+verifyAssign nobe subtyping IncompleteStruct t2 =
+    verifyAssign nobe subtyping Base t2
+verifyAssign nobe subtyping t1 IncompleteStruct =
+    verifyAssign nobe subtyping t1 Base
 verifyAssign nobe subtyping t1 t2 =
     warn nobe "verification type mismatch" [t1,t2]
 
@@ -435,7 +451,8 @@ checkStructUnion (CStruct tag (Just name) Nothing attrs nobe) =
     do t' <- getType $ StructName name
        case t' of -- Honour incomplete struct declarations
            Just t -> return t
-           Nothing -> do addType nobe (StructName name) Base; return Base
+           Nothing -> do addType nobe (StructName name) IncompleteStruct
+                         return IncompleteStruct
 checkStructUnion (CStruct tag name' (Just decls) attrs nobe) =
     let namedOnly (Just x, y) = Just (x, y)
         namedOnly (Nothing, _) = Nothing
@@ -446,7 +463,7 @@ checkStructUnion (CStruct tag name' (Just decls) attrs nobe) =
               Nothing -> return ()
           return $ Struct contence
 checkStructUnion (CStruct tag Nothing Nothing attrs nobe) =
-    do warn nobe "illegal struct structure" emptyMsg; return Base
+    do warn nobe "illegal struct structure" emptyMsg; return IncompleteStruct
 
 checkEnum :: CEnum -> State Checker ()
 checkEnum (CEnum _ Nothing _ _) = return ()
@@ -463,12 +480,14 @@ checkDeclSpec nobe (t0',a0',_) (CStorageSpec (CTypedef _)) =
 checkDeclSpec nobe (t0',a0',x) (CStorageSpec _) = return (t0',a0',x)
 checkDeclSpec nobe (t0',a0',x) (CTypeSpec spec) =
     do t <- checkTypeSpec spec
-       case t0' of
-           Just t0 ->
+       case (t,t0') of
+           -- For qualifiers like "unsigned", "long", "double", etc.
+           (Base, Just Base) -> return (Just Base, a0', x)
+           (_, Just t0) ->
                do warn nobe "multi-typed declspec!"
                       [M "overriding:" t0, M "with new type:" t]
                   return (Just t, a0', x)
-           Nothing -> return (Just t, a0', x)
+           (_, Nothing) -> return (Just t, a0', x)
 checkDeclSpec nobe (t0',a0',x) (CTypeQual qual) =
     do a' <- checkTypeQual qual
        case (a0',a') of
