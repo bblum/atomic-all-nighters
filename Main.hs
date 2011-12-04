@@ -17,13 +17,15 @@ import Check
 -- Options & Usage
 --
 
-data Options = Options { help :: Bool, verbose :: Bool }
-defaultOptions = Options { help = False, verbose = False }
+data Options = Options { help :: Bool, verbose :: Bool, includes :: [String] }
+defaultOptions = Options { help = False, verbose = False, includes = [] }
 
 desc = [ Option ['h'] ["help"] (NoArg (\o -> o { help = True }))
          "Show this help text"
        , Option ['v'] ["verbose"] (NoArg (\o -> o { verbose = True }))
          "Show info messages in addition to warnings and errors"
+       , Option ['I'] ["include"] (ReqArg (\s o -> o { includes = s:(includes o) }) "DIR")
+         "Add a directory to the include path"
        ]
 
 header = "Atomic All-Nighters - static C code context checking\n" ++
@@ -46,9 +48,10 @@ parseArgs a =
 
 micro_name = "ATOMIC_ALL_NIGHTERS"
 
-parseFile :: FilePath -> IO CTranslUnit
-parseFile input_file =
-    do parse_result <- parseCFile (newGCC "gcc") Nothing ["-D" ++ micro_name] input_file
+parseFile :: Options -> FilePath -> IO CTranslUnit
+parseFile opt input_file =
+    do let args = ["-D" ++ micro_name] ++ (map ("-I" ++) (includes opt))
+       parse_result <- parseCFile (newGCC "gcc") Nothing args input_file
        case parse_result of
            Left parse_err -> error (show parse_err)
            Right ast      -> return ast
@@ -62,7 +65,7 @@ main =
                do mapM_ putStrLn errs
                   exitWith $ ExitFailure 1
            Right (opts, file) ->
-               do ast <- parseFile file
+               do ast <- parseFile opts file
                   print $ pretty ast
                   let msgs = check ast
                   mapM_ putStrLn msgs
