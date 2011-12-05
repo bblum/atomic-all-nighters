@@ -22,7 +22,8 @@ data TypeName = VarName Ident | StructName Ident | TypedefName Ident
                 deriving (Show,Eq,Ord)
 
 data Type = Base
-          | Arrow [Type] Type (Maybe Annotation)
+          -- [Type]: arguments; Type: return type; Bool: isVariadic
+          | Arrow [Type] Type Bool (Maybe Annotation)
           | Pointer Type
           | Struct (Maybe Ident) (Map.Map Ident Type)
           | IncompleteStruct Ident
@@ -63,9 +64,10 @@ defaultChecker = Checker undefined builtinTypes [] Map.empty [] [] []
 
 instance Show Type where
     show Base = "T"
-    show (Arrow args ret a') =
-        let argstr = case args of [] -> "unit"
-                                  _ -> intercalate ", " (map show args)
+    show (Arrow args ret isVariadic a') =
+        let argstrs = map show args ++ (if isVariadic then ["..."] else [])
+            argstr = case args of [] -> "unit"
+                                  _ -> intercalate ", " argstrs
         in "(" ++ argstr ++ " -> " ++ show ret
            ++ " {" ++ maybe "???" show a' ++ "})"
     show (Pointer t) = show t ++ "*"
@@ -192,7 +194,7 @@ getType :: TypeName -> State Checker (Maybe Type)
 getType name =
     do t' <- Map.lookup name <$> types <$> get
        -- strip outer "pointer" from function pointers. see also checkDeclr
-       case t' of (Just (Pointer (x@(Arrow _ _ _)))) -> return $ Just x
+       case t' of (Just (Pointer (x@(Arrow _ _ _ _)))) -> return $ Just x
                   _ -> return t'
 
 getTypeOrBase :: NodeInfo -> TypeName -> State Checker Type
@@ -277,7 +279,7 @@ info _ _ _ = return () -- TODO: better msg datatype
 containsArrows :: Type -> Bool
 containsArrows (Base) = False
 containsArrows (Pointer t) = containsArrows t
-containsArrows (Arrow _ _ _) = True
+containsArrows (Arrow _ _ _ _) = True
 containsArrows (Struct _ contence) = F.any containsArrows contence
 containsArrows (IncompleteStruct _) = False
 
@@ -295,26 +297,28 @@ mergeType doDisjoin nobe (Struct name1 m1) (Struct name2 m2) =
     else
         do warn nobe "incompatible structs during type intersection" [m1,m2]
            return Base
-mergeType doDisjoin nobe t1@(Arrow args1 ret1 a1) t2@(Arrow args2 ret2 a2) =
+mergeType doDisjoin nobe t1@(Arrow args1 ret1 iv1 a1) t2@(Arrow args2 ret2 iv2 a2) =
     do -- contravariance on the disjoin/intersect operator
        -- actually only theoretically sound because of the total ordering.
        args <- zipWithM (mergeType (not doDisjoin) nobe) args1 args2
        ret <- mergeType doDisjoin nobe ret1 ret2
+       when (iv1 /= iv2) $ warn nobe "variadicity mismatch in fn merge" emptyMsg
+       let iv = iv1 || iv2
        case (a1,a2) of
            (Just a1', Just a2') -> -- good case
                case (if doDisjoin then disjoin else intersect) a1' a2' of
-                   a@(Just _) -> return $ Arrow args ret a
+                   a@(Just _) -> return $ Arrow args ret iv a
                    Nothing -> do err nobe "unmergable annotations" [a1',a2']
-                                 return $ Arrow args ret (Just a1') -- boo
+                                 return $ Arrow args ret iv (Just a1') -- boo
            (a@(Just _), Nothing) ->
                do warn nobe "missing annotation for merge on right branch" [t1,t2]
-                  return $ Arrow args ret a
+                  return $ Arrow args ret iv a
            (Nothing, a@(Just _)) ->
                do warn nobe "missing annotation for merge on left branch" [t1,t2]
-                  return $ Arrow args ret a
+                  return $ Arrow args ret iv a
            (Nothing, Nothing) ->
                do warn nobe "missing annotation for merge on both branches" [t1,t2]
-                  return $ Arrow args ret Nothing
+                  return $ Arrow args ret iv Nothing
 mergeType doDisjoin nobe (IncompleteStruct _) t2 =
     mergeType doDisjoin nobe Base t2
 mergeType doDisjoin nobe t1 (IncompleteStruct _) =
@@ -325,7 +329,7 @@ mergeType doDisjoin nobe t1 t2 =
 -- TODO: need to worry about extra pointer indirections around arrows? &malloc
 -- The bool argument expresses whether subtyping is allowed.
 verifyAssign :: NodeInfo -> Bool -> Type -> Type -> State Checker ()
-verifyAssign nobe subtyping t1@(Arrow args1 ret1 a1) t2@(Arrow args2 ret2 a2) =
+verifyAssign nobe subtyping t1@(Arrow args1 ret1 iv1 a1) t2@(Arrow args2 ret2 iv2 a2) =
     let verifyAnnotation True =
             case (liftM2 subtype a1 a2) of
                 Just False ->
@@ -347,6 +351,8 @@ verifyAssign nobe subtyping t1@(Arrow args1 ret1 a1) t2@(Arrow args2 ret2 a2) =
                         [M "dest" a1, M "src" a2]
     in do when (length args1 /= length args2) $
               warn nobe "verification argument count mismatch" [t1,t2]
+          when (iv1 /= iv2) $
+              warn nobe "varidicity mismatch in fn verification" emptyMsg
           verifyAnnotation subtyping
           verifyAssign nobe subtyping ret1 ret2
           mapM_ (uncurry $ verifyAssign nobe subtyping)
@@ -377,11 +383,11 @@ verifyCall nobe a =
 
 -- Mashes an annotation into an arrow type that might already have one.
 injectAnnotation :: NodeInfo -> Type -> Maybe Annotation -> State Checker Type
-injectAnnotation nobe (Arrow args ret (Just a0)) (Just a) =
+injectAnnotation nobe (Arrow args ret iv (Just a0)) (Just a) =
     do warn nobe "multiply-differently-annotated function" [a0,a]
-       return $ Arrow args ret (Just a)
-injectAnnotation nobe (Arrow args ret Nothing) (Just a) =
-    return $ Arrow args ret (Just a)
+       return $ Arrow args ret iv (Just a)
+injectAnnotation nobe (Arrow args ret iv Nothing) (Just a) =
+    return $ Arrow args ret iv (Just a)
 injectAnnotation nobe t (Just a) =
     do warn nobe "ignoring annotation on non-function" [a]
        return t
@@ -578,7 +584,7 @@ checkDeclr t0 addArgs (CDeclr name' deriveds asmname attrs nobe) =
     do t' <- checkDerivedDeclrs t0 addArgs deriveds
        -- strip the outermost "pointer" type derived-decl from function pointers.
        -- see also: getType
-       let t = case t' of (Pointer x@(Arrow _ _ _)) -> x; _ -> t'
+       let t = case t' of (Pointer x@(Arrow _ _ _ _)) -> x; _ -> t'
        a' <- checkAttrs nobe attrs
        t2 <- injectAnnotation nobe t a'
        return (name', t2)
@@ -592,19 +598,17 @@ checkDerivedDeclrs t0 addArgs ((CArrDeclr quals size nobe):rest) =
 checkDerivedDeclrs t0 addArgs ((CFunDeclr args'' attrs nobe):rest) =
     do t <- checkDerivedDeclrs t0 addArgs rest
        a' <- checkAttrs nobe attrs
-       args <- case args'' of
-                   Left oldstyle ->
-                       do warn nobe "old-style args ignored" [Arrow [] t a']
-                          return []
-                   Right (decls,isVariadic) ->
-                       do args <- map snd <$> concat <$>
-                                      mapM (checkDecl addArgs) decls
-                          when isVariadic $
-                              warn nobe "variadic function not supported"
-                                  [Arrow args t a']
-                          return args
-       info nobe "processed FunDeclr" [Arrow args t a']
-       return $ Arrow args t a'
+       (args,isVariadic) <-
+           case args'' of
+               Left oldstyle ->
+                   do warn nobe "old-style args ignored" [Arrow [] t False a']
+                      return ([],False)
+               Right (decls,isVariadic) ->
+                   do args <- map snd <$> concat <$>
+                                  mapM (checkDecl addArgs) decls
+                      return (args,isVariadic)
+       info nobe "processed FunDeclr" [Arrow args t isVariadic a']
+       return $ Arrow args t isVariadic a'
 
 -- Misc
 checkArrSize :: CArrSize -> State Checker ()
@@ -803,14 +807,22 @@ checkExpr (CIndex e1 e2 nobe) =
                do warn nobe "can't index non-pointer with non-pointer" [t1,t2]
                   return Base
 checkExpr (CCall e args nobe) =
-    let checkArg (t,e) = do t' <- checkExpr e; verifyAssign nobe True t t'
+    let checkArg (t,e) =
+            do t0 <- checkExpr e; verifyAssign nobe True t t0; return t0
     in do t <- checkExpr e
           case t of
-              Arrow argtypes ret a' ->
-                  do when (length args /= length argtypes) $
-                         warn nobe "argument number mismatch"
-                              [M "expected" argtypes]
-                     mapM checkArg $ zip argtypes args
+              Arrow argtypes ret isVariadic a' ->
+                  do callargtypes <- mapM checkArg $ zip argtypes args
+                     case isVariadic of
+                         True ->
+                             let varargs = drop (length argtypes) callargtypes
+                             in when (any containsArrows varargs) $
+                                    warn nobe "variadic args contain arrows"
+                                        [M "... =" varargs]
+                         False ->
+                             when (length args /= length argtypes) $
+                                 warn nobe "argument number mismatch"
+                                     [M "expected" argtypes]
                      case a' of
                          Just a ->
                              do verifyCall nobe a
