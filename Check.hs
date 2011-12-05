@@ -10,7 +10,7 @@ import qualified Data.Map as Map
 import Data.List (intercalate)
 import qualified Data.Foldable as F (any)
 import Data.Maybe (mapMaybe,catMaybes,fromMaybe,isNothing,fromJust)
-import Language.C.Data.Ident (Ident)
+import Language.C.Data.Ident (Ident,builtinIdent)
 import Language.C.Data.Node (NodeInfo,fileOfNode,posOfNode)
 import Language.C.Data.Position (posRow,posColumn)
 import Language.C.Syntax.AST
@@ -52,7 +52,10 @@ data Checker = Checker {
     switches :: [[Context]]
 }
 
-defaultChecker = Checker undefined Map.empty [] Map.empty [] [] []
+builtinTypes = Map.fromList
+    [(TypedefName $ builtinIdent "__builtin_va_list", Base)]
+
+defaultChecker = Checker undefined builtinTypes [] Map.empty [] [] []
 
 --
 -- Instants.
