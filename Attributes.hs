@@ -23,6 +23,7 @@ stringToRule :: String -> Maybe Rule
 stringToRule s =
     case s of
         "might_sleep" -> Just $ Rule $ Nested 0
+        "int_handler" -> Just $ Rule $ Nested 1
         "wont_sleep" -> Just $ Rule Infinity
         _ -> Nothing
 

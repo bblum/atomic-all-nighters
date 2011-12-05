@@ -20,6 +20,7 @@ instance Ord Context where -- subtyping relation; user-defined
 
 instance Show Rule where -- user-defined
     show (Rule (Nested 0)) = "might_sleep"
+    show (Rule (Nested 1)) = "int_handler"
     show (Rule (Nested x)) = "[unknown rule: " ++ show x ++ "]"
     show (Rule Infinity) = "wont_sleep"
 
@@ -69,6 +70,6 @@ disjoin = merge max
 entryContext :: Annotation -> Context
 entryContext (Annotation (Rule r, _)) = r
 
--- Gives a default "assume the best" context.
+-- Gives a default context to start checking function bodies.
 entryDefault :: Context -- user-defined
-entryDefault = Nested 0
+entryDefault = Infinity
