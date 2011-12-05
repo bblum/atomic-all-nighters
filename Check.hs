@@ -8,6 +8,7 @@ import Control.Monad.State
 import qualified Data.Traversable as T (sequence,mapM)
 import qualified Data.Map as Map
 import Data.List (intercalate)
+import qualified Data.Foldable as F (any)
 import Data.Maybe (mapMaybe,catMaybes,fromMaybe,isNothing,fromJust)
 import Language.C.Data.Ident (Ident)
 import Language.C.Data.Node (NodeInfo,fileOfNode,posOfNode)
@@ -17,15 +18,15 @@ import Language.C.Syntax.AST
 import Rules
 import Attributes
 
+data TypeName = VarName Ident | StructName Ident | TypedefName Ident
+                deriving (Show,Eq,Ord)
+
 data Type = Base
           | Arrow [Type] Type (Maybe Annotation)
           | Pointer Type
-          | Struct (Map.Map Ident Type)
-          | IncompleteStruct
+          | Struct (Maybe Ident) (Map.Map Ident Type)
+          | IncompleteStruct Ident
           deriving Eq
-
-data TypeName = VarName Ident | StructName Ident | TypedefName Ident
-                deriving (Show,Eq,Ord)
 
 -- TODO: data Message
 
@@ -65,8 +66,10 @@ instance Show Type where
         in "(" ++ argstr ++ " -> " ++ show ret
            ++ " {" ++ maybe "???" show a' ++ "})"
     show (Pointer t) = show t ++ "*"
-    show (Struct contence) = "struct {" ++ show contence ++ "}"
-    show (IncompleteStruct) = "struct"
+    show (Struct (Just name) contence) =
+        "struct " ++ show name ++ " {" ++ show contence ++ "}"
+    show (Struct Nothing contence) = "struct {" ++ show contence ++ "}"
+    show (IncompleteStruct name) = "struct " ++ show name
 
 instance Show (MessageLine a) where
     show (M str a) = str ++ " \t" ++ show a
@@ -200,13 +203,17 @@ addType :: NodeInfo -> TypeName -> Type -> State Checker ()
 addType nobe name t =
     do prior' <- Map.lookup name <$> types <$> get
        case prior' of
-           Just IncompleteStruct ->
+           Just (IncompleteStruct _) ->
                info nobe "incomplete struct being defined"
                    [M "named" $ show name, M "contence" $ show t]
            Just t0 ->
-               warn nobe "type is being shadowed"
-                   [M "named" $ show name, M "old type" $ show t0,
-                    M "new type" $ show t]
+               if t == t0 then
+                   info nobe "type is being shadowed (same type)"
+                       [M "named" $ show name, M "type" $ show t]
+               else
+                   warn nobe "type is being shadowed (different type)"
+                       [M "named" $ show name, M "old type" $ show t0,
+                        M "new type" $ show t]
            Nothing -> return ()
        modify (\s -> s { types = Map.insert name t $ types s })
 
@@ -264,16 +271,23 @@ info _ _ _ = return () -- TODO: better msg datatype
 -- Verification.
 --
 
+containsArrows :: Type -> Bool
+containsArrows (Base) = False
+containsArrows (Pointer t) = containsArrows t
+containsArrows (Arrow _ _ _) = True
+containsArrows (Struct _ contence) = F.any containsArrows contence
+containsArrows (IncompleteStruct _) = False
+
 -- if doDisjoin, then disjoin the types; else, intersect the types.
 -- this comes into play when doing arrow annotations.
 mergeType :: Bool -> NodeInfo -> Type -> Type -> State Checker Type
 mergeType doDisjoin nobe (Base) (Base) = return Base
 mergeType doDisjoin nobe (Pointer t1) (Pointer t2) =
     Pointer <$> mergeType doDisjoin nobe t1 t2
-mergeType doDisjoin nobe (Struct m1) (Struct m2) =
+mergeType doDisjoin nobe (Struct name1 m1) (Struct name2 m2) =
     if (m1 == m2) then
         -- would disjoin structs, but (a) technical difficulties and (b) stupid
-        liftM Struct $ T.sequence $
+        liftM (Struct name1) $ T.sequence $
             Map.intersectionWith (mergeType doDisjoin nobe) m1 m2
     else
         do warn nobe "incompatible structs during type intersection" [m1,m2]
@@ -298,8 +312,10 @@ mergeType doDisjoin nobe t1@(Arrow args1 ret1 a1) t2@(Arrow args2 ret2 a2) =
            (Nothing, Nothing) ->
                do warn nobe "missing annotation for merge on both branches" [t1,t2]
                   return $ Arrow args ret Nothing
-mergeType doDisjoin nobe IncompleteStruct t2 = mergeType doDisjoin nobe Base t2
-mergeType doDisjoin nobe t1 IncompleteStruct = mergeType doDisjoin nobe t1 Base
+mergeType doDisjoin nobe (IncompleteStruct _) t2 =
+    mergeType doDisjoin nobe Base t2
+mergeType doDisjoin nobe t1 (IncompleteStruct _) =
+    mergeType doDisjoin nobe t1 Base
 mergeType doDisjoin nobe t1 t2 =
     do warn nobe "type mismatch during merge" [t1,t2]; return Base
 
@@ -335,16 +351,19 @@ verifyAssign nobe subtyping t1@(Arrow args1 ret1 a1) t2@(Arrow args2 ret2 a2) =
           info nobe "verified assignment" [M "dest type" t1, M "src type" t2]
 verifyAssign nobe subtyping (Pointer t1) (Pointer t2) =
     verifyAssign nobe False t1 t2 -- Reference cells are invariant.
-verifyAssign nobe subtyping (Struct m1) (Struct m2) =
+verifyAssign nobe subtyping (Struct _ m1) (Struct _ m2) =
     mapM_ (uncurry $ verifyAssign nobe subtyping) -- Structs aren't quite refs.
           (zip (Map.elems m1) (Map.elems m2))
 verifyAssign nobe subtyping Base Base = return ()
-verifyAssign nobe subtyping IncompleteStruct t2 =
+verifyAssign nobe subtyping (IncompleteStruct _) t2 =
     verifyAssign nobe subtyping Base t2
-verifyAssign nobe subtyping t1 IncompleteStruct =
+verifyAssign nobe subtyping t1 (IncompleteStruct _) =
     verifyAssign nobe subtyping t1 Base
 verifyAssign nobe subtyping t1 t2 =
-    warn nobe "verification type mismatch" [t1,t2]
+    if containsArrows t1 || containsArrows t2 then
+        warn nobe "verification type mismatch, with arrows" [t1,t2]
+    else
+        info nobe "verification type mismatch (no arrows)" [t1,t2]
 
 verifyCall :: NodeInfo -> Annotation -> State Checker ()
 verifyCall nobe a =
@@ -442,7 +461,7 @@ checkDecl_ d = checkDecl True d >> return ()
 checkOneDecl :: CDecl -> State Checker (Maybe Ident, Type)
 checkOneDecl d@(CDecl _ _ nobe)  =
     do list <- checkDecl True d
-       case list of [] -> error "empty decl??"
+       case list of [] -> return (Nothing, Base) -- error "empty decl??"
                     [x] -> return x
                     x:rest -> do warn nobe "ignoring extra decls" rest; return x
 
@@ -451,19 +470,20 @@ checkStructUnion (CStruct tag (Just name) Nothing attrs nobe) =
     do t' <- getType $ StructName name
        case t' of -- Honour incomplete struct declarations
            Just t -> return t
-           Nothing -> do addType nobe (StructName name) IncompleteStruct
-                         return IncompleteStruct
+           Nothing -> do addType nobe (StructName name) (IncompleteStruct name)
+                         return $ IncompleteStruct name
 checkStructUnion (CStruct tag name' (Just decls) attrs nobe) =
     let namedOnly (Just x, y) = Just (x, y)
         namedOnly (Nothing, _) = Nothing
     in do contence <- Map.fromList <$> mapMaybe namedOnly <$>
                           concat <$> mapM (checkDecl False) decls
           case name' of
-              Just name -> addType nobe (StructName name) (Struct contence)
+              Just name -> addType nobe (StructName name)
+                                   (Struct (Just name) contence)
               Nothing -> return ()
-          return $ Struct contence
+          return $ Struct name' contence
 checkStructUnion (CStruct tag Nothing Nothing attrs nobe) =
-    do warn nobe "illegal struct structure" emptyMsg; return IncompleteStruct
+    do warn nobe "illegal struct structure" emptyMsg; return Base
 
 checkEnum :: CEnum -> State Checker ()
 checkEnum (CEnum _ Nothing _ _) = return ()
@@ -810,17 +830,23 @@ checkExpr (CCall e args nobe) =
 checkExpr (CMember e name isderef nobe) =
     let memberType contence =
             case Map.lookup name contence of
+                Just (Pointer (IncompleteStruct sub)) ->
+                    do t <- getType $ StructName sub
+                       maybe (return $ Pointer Base) (return . Pointer) t
+                Just (IncompleteStruct sub) ->
+                    do t <- getType $ StructName sub
+                       maybe (return Base) return t
                 Just t -> return t
                 Nothing ->
                     do warn nobe "missing struct member" [name]; return Base
     in do t <- checkExpr e
           case isderef of -- if/else didn't parse for some reason...
               True ->
-                  case t of Pointer (Struct contence) -> memberType contence
+                  case t of Pointer (Struct _ contence) -> memberType contence
                             _ -> do warn nobe "bad type for struct->member" [t]
                                     return Base
               False ->
-                  case t of Struct contence -> memberType contence
+                  case t of Struct _ contence -> memberType contence
                             _ -> do warn nobe "bad type for struct.member" [t]
                                     return Base
 checkExpr (CVar name nobe) = getTypeOrBase nobe $ VarName name
