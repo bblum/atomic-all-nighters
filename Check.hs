@@ -194,7 +194,11 @@ getType :: TypeName -> State Checker (Maybe Type)
 getType name =
     do t' <- Map.lookup name <$> types <$> get
        -- strip outer "pointer" from function pointers. see also checkDeclr
-       case t' of (Just (Pointer (x@(Arrow _ _ _ _)))) -> return $ Just x
+       case t' of Just (Pointer (x@(Arrow _ _ _ _))) -> return $ Just x
+                  Just (IncompleteStruct sub) ->
+                      do t2' <- Map.lookup (StructName sub) <$> types <$> get
+                         case t2' of Just t2@(Struct _ _) -> return $ Just t2
+                                     _ -> return t'
                   _ -> return t'
 
 getTypeOrBase :: NodeInfo -> TypeName -> State Checker Type
@@ -210,14 +214,14 @@ addType nobe name t =
        case prior' of
            Just (IncompleteStruct _) ->
                info nobe "incomplete struct being defined"
-                   [M "named" $ show name, M "contence" $ show t]
+                   [M "named   " $ show name, M "contence" $ show t]
            Just t0 ->
                if t == t0 then
                    info nobe "type is being shadowed (same type)"
-                       [M "named" $ show name, M "type" $ show t]
+                       [M "named" $ show name, M "type " $ show t]
                else
                    warn nobe "type is being shadowed (different type)"
-                       [M "named" $ show name, M "old type" $ show t0,
+                       [M "named   " $ show name, M "old type" $ show t0,
                         M "new type" $ show t]
            Nothing -> return ()
        modify (\s -> s { types = Map.insert name t $ types s })
@@ -616,16 +620,44 @@ checkArrSize (CNoArrSize _) = return ()
 checkArrSize (CArrSize _ e) = checkExpr_ e
 
 checkInit :: Type -> CInit -> State Checker ()
-checkInit t (CInitExpr e nobe) =
-    do t' <- checkExpr e
-       verifyAssign nobe True t t'
-checkInit t (CInitList inits nobe) = mapM_ (checkInitListElem t) inits
+checkInit t0 (CInitExpr e nobe) =
+    do t <- checkExpr e
+       verifyAssign nobe True t0 t
+checkInit t0 (CInitList inits nobe) = mapM_ (checkInitListElem nobe t0) inits
 
-checkInitListElem :: Type -> ([CDesignator], CInit) -> State Checker ()
-checkInitListElem _ _ = error "initialiser lists are not supported yet" -- TODO
+checkInitListElem :: NodeInfo -> Type -> ([CDesignator], CInit)
+                     -> State Checker ()
+checkInitListElem nobe (Pointer t) ([], i) = checkInit t i
+checkInitListElem nobe (Base) ([], i) = checkInit Base i -- dur
+checkInitListElem nobe _ ([], i) =
+    do warn nobe "empty struct member designator not supported." emptyMsg
+       checkInit Base i
+checkInitListElem nobe t0 (list, i) =
+    do t <- foldM checkDesignator t0 list
+       checkInit t i
 
-checkDesignator :: CDesignator -> State Checker ()
-checkDesignator _ = error "designators not supported yet" -- TODO
+checkDesignator :: Type -> CDesignator -> State Checker Type
+checkDesignator t0 (CArrDesig e nobe) =
+    do checkExpr_ e
+       case t0 of (Pointer t) -> return t
+                  _ -> do warn nobe "array designator in non-array type" [t0]
+                          return Base
+checkDesignator t0 (CRangeDesig e1 e2 nobe) =
+    do checkExpr_ e1
+       checkExpr_ e2
+       case t0 of (Pointer t) -> return t
+                  _ -> do warn nobe "array designator in non-array type" [t0]
+                          return Base
+checkDesignator t0@(Struct _ contence) (CMemberDesig name nobe) =
+    case Map.lookup name contence of
+        Just t -> return t
+        Nothing -> do warn nobe "member designator not found in struct type"
+                          [M "type" $ show t0, M "member" $ show name]
+                      return Base
+checkDesignator t0 (CMemberDesig name nobe) =
+    do warn nobe "member designator for non-struct type"
+           [M "type" $ show t0, M "member" $ show name]
+       return Base
 
 -- Statemence.
 checkStat :: CStat -> State Checker Type
@@ -831,8 +863,8 @@ checkExpr (CCall e args nobe) =
                                     Just g2 -> do info nobe "changed context"
                                                       [g2]
                                                   setContext g2
-                                    Nothing -> warn nobe "illegal context effect"
-                                                   [M "attempted call" $ show a,
+                                    Nothing -> err nobe "illegal context effect"
+                                                   [M "attempted call " $ show a,
                                                     M "current context" $ show g]
                          Nothing ->
                              do g <- getContext
@@ -858,17 +890,35 @@ checkExpr (CMember e name isderef nobe) =
           case isderef of -- if/else didn't parse for some reason...
               True ->
                   case t of Pointer (Struct _ contence) -> memberType contence
+                            Pointer (IncompleteStruct sub) ->
+                                do t2 <- getType $ StructName sub
+                                   case t2 of
+                                       Just (Struct _ contence) ->
+                                           memberType contence
+                                       _ ->
+                                           do warn nobe "bad incomplete->member"
+                                                  [t]
+                                              return Base
                             _ -> do warn nobe "bad type for struct->member" [t]
                                     return Base
               False ->
                   case t of Struct _ contence -> memberType contence
+                            IncompleteStruct sub ->
+                                do t2 <- getType $ StructName sub
+                                   case t2 of
+                                       Just (Struct _ contence) ->
+                                           memberType contence
+                                       _ ->
+                                           do warn nobe "bad incomplete.member"
+                                                  [t]
+                                              return Base
                             _ -> do warn nobe "bad type for struct.member" [t]
                                     return Base
 checkExpr (CVar name nobe) = getTypeOrBase nobe $ VarName name
 checkExpr (CConst _) = return Base
 checkExpr (CCompoundLit d inits nobe) =
     do t <- snd <$> checkOneDecl d
-       mapM (checkInitListElem t) inits
+       mapM (checkInitListElem nobe t) inits
        return t
 checkExpr (CStatExpr s nobe) = checkStat s
 checkExpr (CLabAddrExpr name nobe) = return Base
