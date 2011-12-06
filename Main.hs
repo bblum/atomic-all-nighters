@@ -29,7 +29,7 @@ desc = [ Option ['h'] ["help"] (NoArg (\o -> o { help = True }))
        ]
 
 header = "Atomic All-Nighters - static C code context checking\n" ++
-         "Usage: aaa [OPTION...] SOURCEFILE"
+         "Usage: aan [OPTION...] SOURCEFILE"
 helptext = usageInfo header desc
 
 parseArgs :: [String] -> Either [String] (Options, String)
@@ -66,7 +66,7 @@ main =
                   exitWith $ ExitFailure 1
            Right (opts, file) ->
                do ast <- parseFile opts file
-                  print $ pretty ast
+                  -- print $ pretty ast
                   let msgs = check ast
                   mapM_ putStrLn msgs
                   when (not $ null msgs) $ exitWith $ ExitFailure 1

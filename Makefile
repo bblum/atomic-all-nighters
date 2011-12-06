@@ -1,13 +1,13 @@
 HSFLAGS+= -fwarn-incomplete-patterns -O2 -funbox-strict-fields -fasm -optc-O3 -XGADTs
 HSMAKE=ghc $(HSFLAGS) --make
 
-EFILES=bin/aaa
+EFILES=bin/aan
 
 .DEFAULT:all
 
 all: $(EFILES)
-aaa: bin/aaa
+aan: bin/aan
 
-bin/aaa: Main.hs Check.hs Rules.hs
+bin/aan: Main.hs Check.hs Rules.hs
 	mkdir -p bin
 	$(HSMAKE) $< -o $@
