@@ -362,16 +362,24 @@ verifyAssign nobe subtyping t1@(Arrow args1 ret1 iv1 a1) t2@(Arrow args2 ret2 iv
           mapM_ (uncurry $ verifyAssign nobe subtyping)
                 (zip args2 args1) -- contravariant!
           info nobe "verified assignment" [M "dest type" t1, M "src type" t2]
+-- Pointers
+verifyAssign nobe subtyping (Pointer Base) (Pointer Base) = return ()
+verifyAssign nobe subtyping (Pointer Base) t2 =
+    info nobe "allowing cast to void *" [t2]
+verifyAssign nobe subtyping t1 (Pointer Base) =
+    info nobe "allowing cast from void *" [t1]
 verifyAssign nobe subtyping (Pointer t1) (Pointer t2) =
     verifyAssign nobe False t1 t2 -- Reference cells are invariant.
+-- Structs
 verifyAssign nobe subtyping (Struct _ m1) (Struct _ m2) =
     mapM_ (uncurry $ verifyAssign nobe subtyping) -- Structs aren't quite refs.
           (zip (Map.elems m1) (Map.elems m2))
 verifyAssign nobe subtyping Base Base = return ()
 verifyAssign nobe subtyping (IncompleteStruct _) t2 =
-    verifyAssign nobe subtyping Base t2
+    verifyAssign nobe subtyping Base t2 -- trying to resolve this causes stack overflow
 verifyAssign nobe subtyping t1 (IncompleteStruct _) =
     verifyAssign nobe subtyping t1 Base
+-- No match
 verifyAssign nobe subtyping t1 t2 =
     if containsArrows t1 || containsArrows t2 then
         warn nobe "verification type mismatch, with arrows" [t1,t2]
@@ -612,6 +620,7 @@ checkDerivedDeclrs t0 addArgs ((CFunDeclr args'' attrs nobe):rest) =
                                   mapM (checkDecl addArgs) decls
                       return (args,isVariadic)
        info nobe "processed FunDeclr" [Arrow args t isVariadic a']
+       -- XXX: some bug causes this to not like unnamed arguments.
        return $ Arrow args t isVariadic a'
 
 -- Misc
