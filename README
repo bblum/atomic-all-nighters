@@ -228,13 +228,29 @@ There are certain idioms and tricks you have to watch out for.
   It's the functions which indirectly call it (mutex, cond, sem, yield) which
   you care about.
 
+
+==== 5.1 World Map ====
+
+The following student kernels are provided:
+
+- group-04 (F11). Easy mode. Bugs all over the place.
+
+- group-19 (F11). Try syscalls.c (you should be able to get it to print no
+  messages at all), and keyboard_driver.c (you should find a bug or two).
+
+- group-15 (F10). One of the inspiring examples for this project. Try
+  scheduler.c.
+
+- group-14 (F11). Hard mode! You should verify that there are no bugs, but may
+  need to restructure some of the interfaces to properly annotate them.
+
 I advise attempting to annotate each student kernel in two phases: start by
 annotating all functions in all header files, and then pick a .c file and
 annotate the functions in that and check just that file until you are content
 with it.
 
 
-==== 5. Feedback ====
+==== 5.2 Feedback ====
 
 Please note these things, and anything else of interest, while using AAN:
 
