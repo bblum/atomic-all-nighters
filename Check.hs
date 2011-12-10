@@ -50,13 +50,16 @@ data Checker = Checker {
     breaks :: [[Context]],
     continues :: [[Context]],
     -- The end contexts for all the case branches in a switch statement.
-    switches :: [[Context]]
+    branches :: [[Context]],
+    -- 'Return' tracking.
+    returned :: [[Bool]],
+    ends :: [[Context]]
 }
 
 builtinTypes = Map.fromList
     [(TypedefName $ builtinIdent "__builtin_va_list", Base)]
 
-defaultChecker = Checker undefined builtinTypes [] Map.empty [] [] []
+defaultChecker = Checker undefined builtinTypes [] Map.empty [] [] [] [] []
 
 --
 -- Instants.
@@ -114,25 +117,93 @@ continueLoop =
            (c:cs') -> modify (\s -> s { continues = (g:c):cs' })
            [] -> error "inconsistent continue stack in continue"
 
+-- Switch statemence
+
 enterSwitch :: State Checker ()
 enterSwitch =
-    modify (\s -> s { breaks = []:(breaks s), switches = []:(switches s) })
+    modify (\s -> s { breaks = []:(breaks s), branches = []:(branches s),
+                      returned = []:(returned s) })
 
 exitSwitch :: State Checker [Context]
 exitSwitch =
-    do bs <- breaks <$> get
-       case bs of
-           (b:bs') -> do modify (\s -> s { breaks = bs' })
-                         return b
-           [] -> error "inconsistent break stack exiting switch"
+    do ks <- breaks <$> get
+       bs <- branches <$> get
+       rs <- returned <$> get
+       case (ks,bs,rs) of
+           (k:ks', b:bs', r:(r1:r1s):rs') ->
+               do modify (\s -> s { breaks = ks', branches = bs',
+                                    returned = ((and $ r1:r):r1s):rs' })
+                  return k -- XXX FIXME: doesn't account for fallthrough;
+           _ -> error "inconsistent break or return stack exiting switch"
 
-exitCase :: Context -> Context -> State Checker ()
-exitCase g0 g =
-    do ss <- switches <$> get
+enterCase :: State Checker Context
+enterCase =
+    do rs <- returned <$> get
+       case rs of
+           (r:rs') -> modify (\s -> s { returned = (False:r):rs' })
+           [] -> error "inconsistent return stack entering case"
+       getContext
+
+exitCase :: Context -> State Checker ()
+exitCase g0 =
+    do g <- getContext
+       ss <- branches <$> get
        case ss of
-           (gs:ss') -> do modify (\s -> s { switches = (g:gs):ss' })
-           [] -> error "inconsistent switches stack exiting case"
+           (gs:ss') -> do modify (\s -> s { branches = (g:gs):ss' })
+           [] -> error "inconsistent branches stack exiting case"
        setContext g0 -- XXX FIXME: this silently breaks in fall-through cases
+
+-- If statemence
+
+enterIf :: State Checker ()
+enterIf =
+    modify (\s -> s { branches = []:(branches s), returned = []:(returned s) })
+
+exitIf :: NodeInfo -> State Checker (Bool, Bool)
+exitIf nobe =
+    do bs <- branches <$> get
+       rs <- returned <$> get
+       case (bs,rs) of
+           (b:bs', (r@[case1,case2]):(r1:r1s):rs') ->
+               do modify (\s -> s { branches = bs',
+                                    returned = ((and $ r1:r):r1s):rs' })
+                  return (case1,case2)
+           _ -> error $ "inconsistent branch or return stack exiting if"
+                        ++ show (bs,rs) ++ show nobe
+
+enterBranch :: State Checker Context
+enterBranch =
+    do rs <- returned <$> get
+       case rs of
+           (r:rs') -> modify (\s -> s { returned = (False:r):rs' })
+           [] -> error "inconsistent return stack entering branch"
+       getContext
+
+exitBranch :: Context -> State Checker Context
+exitBranch g0 =
+    do g <- getContext
+       ss <- branches <$> get
+       case ss of
+           (gs:ss') -> do modify (\s -> s { branches = (g:gs):ss' })
+           [] -> error "inconsistent branches stack exiting branch"
+       setContext g0
+       return g
+
+-- Miscellaneous flow
+
+doReturn :: NodeInfo -> State Checker () -- can't really call it 'return'
+doReturn nobe =
+    do g <- getContext
+       endings <- ends <$> get
+       case endings of
+           (gs:rest) -> modify (\s -> s { ends = (g:gs):rest })
+           [] -> error "attempt to return outside of a function??"
+       rs <- returned <$> get
+       case rs of
+           ((True:r1s):rs') -> do warn nobe "double return" emptyMsg
+                                  modify (\s -> s { returned = (True:r1s):rs' })
+           ((False:r1s):rs') -> modify (\s -> s { returned = (True:r1s):rs' })
+           _ -> error "inconsistent returned stack"
 
 checkMergeContexts :: NodeInfo -> Context -> [Context] -> State Checker ()
 checkMergeContexts nobe g0 gs =
@@ -445,6 +516,7 @@ checkFunDef (CFunDef specs declr oldstyle body nobe) =
           info nobe "entering function with context" [g]
           gold <- getContext
           setContext g
+          modify (\s -> s { returned = [False]:(returned s), ends = []:(ends s)})
           checkStat body
           -- check exit context against advertised effect
           gnew <- getContext
@@ -453,6 +525,15 @@ checkFunDef (CFunDef specs declr oldstyle body nobe) =
                              err nobe "exit context != advertised effect"
                                  [M "entry context" g, M "exit context" gnew]
                      Nothing -> return ()
+          -- check all returned contexts against each other
+          endings <- ends <$> get
+          case endings of
+              (gs:rest) ->
+                  do when (not $ all (== gnew) gs) $
+                         err nobe "not all exit contexts match each other"
+                             (gnew:gs)
+                     modify (\s -> s { ends = rest })
+              _ -> error "inconsistent ends stack at function end"
           -- restore old context and types mapping
           restoreState oldstate
           -- second time - make this function be scoped in future functions
@@ -675,25 +756,22 @@ checkStat (CLabel name s attrs nobe) =
        meetLabel nobe g0 name
        checkStat s
 checkStat (CCase e s nobe) =
-    do g0 <- getContext
+    do g0 <- enterCase
        checkExpr_ e
        checkStat_ s
-       g <- getContext
-       exitCase g0 g
+       exitCase g0
        return Base
 checkStat (CCases e1 e2 s nobe) =
-    do g0 <- getContext
+    do g0 <- enterCase
        checkExpr_ e1
        checkExpr_ e2
        checkStat_ s
-       g <- getContext
-       exitCase g0 g
+       exitCase g0
        return Base
 checkStat (CDefault s nobe) =
-    do g0 <- getContext
+    do g0 <- enterCase
        checkStat_ s
-       g <- getContext
-       exitCase g0 g
+       exitCase g0
        return Base
 checkStat (CExpr e' nobe) = maybe (return Base) checkExpr e'
 checkStat (CCompound labels blox nobe) =
@@ -703,13 +781,19 @@ checkStat (CCompound labels blox nobe) =
        return Base
 checkStat (CIf e s1 s2' nobe) =
     do checkExpr_ e
-       g0 <- getContext
+       enterIf
+       g0 <- enterBranch
        checkStat_ s1
-       g1 <- getContext
-       setContext g0
+       g1 <- exitBranch g0
+       _ <- enterBranch
        maybe (return ()) checkStat_ s2'
-       g2 <- getContext
-       mergeContexts nobe g1 [g2]
+       g2 <- exitBranch g0
+       (returned1,returned2) <- exitIf nobe -- See which branches did return or not.
+       case (returned1,returned2) of
+           (False,False) -> mergeContexts nobe g1 [g2]
+           (True,False) -> setContext g2
+           (False,True) -> setContext g1
+           _ -> return () -- Means we returned wholesale.
        return Base
 checkStat (CSwitch e s nobe) =
     do checkExpr_ e
@@ -759,7 +843,10 @@ checkStat (CGotoPtr e nobe) =
        return Base
 checkStat (CCont nobe) = continueLoop >> return Base
 checkStat (CBreak nobe) = breakLoop >> return Base
-checkStat (CReturn e' nobe) = maybe (return Base) checkExpr e'
+checkStat (CReturn e' nobe) =
+    do t <- maybe (return Base) checkExpr e'
+       doReturn nobe
+       return t
 checkStat (CAsm asm nobe) = checkAsmStmt asm >> return Base
 
 checkStat_ s = checkStat s >> return ()
