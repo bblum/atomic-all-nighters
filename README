@@ -231,6 +231,9 @@ There are certain idioms and tricks you have to watch out for.
 
 ==== 5.1 World Map ====
 
+Download http://maximegalon.andrew.cmu.edu/worldmap.zip - its password is the
+same password as for ##410ta.
+
 The following student kernels are provided:
 
 - group-04 (F11). Easy mode. Bugs all over the place.
