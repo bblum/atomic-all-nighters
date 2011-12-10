@@ -3,8 +3,16 @@
 ==== Ben Blum - 15-799A - Fall 2011 ====
 ========================================
 
+!!! PLEASE NOTE!!!
+
+Before you get started on reading this, please make a note of the time. Section
+5.2 will ask you for how long it took you to get up to speed on using the tool,
+most of which should be reading this document.
+
 
 ==== 1. Introduction ====
+
+Read the note above if you haven't already.
 
 The "atomic sleep" problem happens in kernels when a piece of code that executes
 with interrupts/preemption disabled ("in atomic context") calls something that
