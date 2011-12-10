@@ -159,7 +159,7 @@ To build, just invoke "make"; you will need GHC, and Language.C version
 0.3.something (I use 0.3.2.1). On the GHC machines, you can run
 "./get_language_c.sh" and hopefully then a make will work.
 
-For each file you wish to check, run: aan [include paths] path/to/file.c
+For each file you wish to check, run: ./bin/aan [include paths] path/to/file.c
 
 "list_includes.sh" should be used, from the directory with 410kern in it, to
 generate the include paths.
