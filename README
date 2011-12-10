@@ -1,0 +1,126 @@
+========================================
+====      Atomic All-Nighters       ====
+==== Ben Blum - 15-799A - Fall 2011 ====
+========================================
+
+
+==== 1. Introduction ====
+
+The "atomic sleep" problem happens in kernels when a piece of code that executes
+with interrupts/preemption disabled ("in atomic context") calls something that
+causes the scheduler to be invoked. For example, in Linux...
+
+    spin_lock(foo); mutex_lock(bar);
+
+...spinlocks are "disable preemption on this CPU and spin-wait in case another
+CPU has the lock", and mutexes are the higher-level descheduling primitive.
+(When I say preemption, I mean preemption or interrupts, depending on the
+kernel.)
+
+This can cause all sorts of problems:
+
+- If the preemption-disabling mechanism works by a global (percpu) counter, this
+  can cause the preemption state to be corrupted, especially if they get
+  automatically restored by going back to userspace, and on the next syscall the
+  kernel will think it is still off.
+- Even without a counter, this can cause preemption disabling to be "leaked" -
+  i.e., switching to another thread, interrupts can stay off for arbitrarily
+  long.
+- With SMP spinlocks, this can cause deadlock: thread 1 takes a spinlock, does
+  something which causes a reschedule to thread 2 on the same core, which tries
+  to take the same spinlock. That cpu will be stuck spinning forever.
+
+The point of Atomic All-Nighters is to statically check kernel code to ensure
+that it never sleeps in atomic sections.
+
+
+==== 2.1. Contexts ====
+
+We refer to the implicit state of preemption- or interrupt-disabling at a given
+point in the code as the "Context".
+
+    data Context = Nested Int | Infinity
+
+Many kernels need sometimes to do multiple successive things that each would
+disable preemption, and so instead of explicitly toggling the preemption state,
+maintain a counter that tracks the "preemption nesting depth" (undoing any one
+of those things "tries" to reenable preemption, but actually just decrements the
+counter, and only really turns on preemption when the counter hits zero). It is
+easiest to think of this counter as representing "How many spin-locks are held".
+
+"Nested <N>" means N spinlocks are held (or analogous), so it will take N calls
+to spin_unlock (or analogous) before preemption is re-enabled. "Nested 0" means
+preemption is already enabled. "Infinity" is a special-case used for checking
+functions that promise that they will never sleep; i.e., they are okay to be
+called with arbitrarily many spinlocks held.
+
+
+==== 2.2. Rules ====
+
+Each function (and function pointer) is to be annotated with a "Rule".
+
+    newtype Rule = Rule Context
+
+The rule expresses the "most restrictive context" that the function is allowed
+to be called in. To think of Atomic All-Nighters as a type system / typechecker,
+the rule of each function is its type. We define a total ordering on
+contexts/rules to express "restrictiveness", which serves as a subtyping
+relation.
+
+    Infinity <= x        = True
+    Nested x <= Nested y = (y <= x)
+
+(Intuitively: Preemption being enabled is the least restrictive context.)
+
+It is legal to call a function with rule "Rule C1" from code with context C2 iff
+C1 is a subtype of C2.
+
+It is legal to assign a function or function pointer with rule "Rule C1" to a
+function pointer with rule "Rule C2" iff C1 is a subtype of C2 (special rules
+apply if the function takes other function pointers as arguments, or if the
+function pointer is inside a reference cell - see contravariant.c, covariant.c,
+banana-bowl.c, etc).
+
+
+==== 2.3. Effects ====
+
+Each function (and function pointer) is also to be annotated with an "Effect".
+
+    data Effect = IncDec Int | Enable | Disable
+
+"IncDec <X>" means to modify the preempt nesting depth by X (no effect on
+Infinity). "Enable" means to set the preempt counter to zero no matter its
+value (even Infinity). "Disable" means to set the preempt counter to Infinity
+to matter its value.
+
+To call a function with an effect changes the current context, as follows (with
+"Just <result>" meaning the call is legal, and "Nothing" meaning illegal):
+
+    effect (Enable)   _          = Just (Nested 0)
+    effect (Disable)  _          = Just (Infinity)
+    effect (IncDec x) (Infinity) = Just (Infinity)
+    effect (IncDec x) (Nested n) =
+        if x+n < 0 then Nothing else Just (Nested (n+x))
+
+It is legal to assign a function or function pointer to a function pointer iff
+their effects are identical.
+
+
+==== 3. Annotations ====
+
+An annotation is a pair of a rule and an effect, and is given using the
+__attribute__ keyword. The file aan.h defines several commonly-used aliases as
+cpp macros.
+
+    MAY_SLEEP - The function might invoke the scheduler, or it might not. It has
+                no effect on the context ("Nested 0, IncDec 0").
+    WONT_SLEEP - The function is guaranteed not to, and is safe to call from
+                 atomic context. It has no effect. ("Infinity, IncDec 0")
+    INT_HANDLER - The function starts with preemption disabled once, and must
+                  enable it once (and is allowed to sleep after that). ("Nested
+                  1, IncDec -1")
+    ENTER_ATOMIC - The function enters an atomic section, without regard for
+                   nesting. ("
+
+
+# vim: tw=80 ts=4 expandtab
