@@ -112,15 +112,169 @@ An annotation is a pair of a rule and an effect, and is given using the
 __attribute__ keyword. The file aan.h defines several commonly-used aliases as
 cpp macros.
 
-    MAY_SLEEP - The function might invoke the scheduler, or it might not. It has
-                no effect on the context ("Nested 0, IncDec 0").
-    WONT_SLEEP - The function is guaranteed not to, and is safe to call from
-                 atomic context. It has no effect. ("Infinity, IncDec 0")
-    INT_HANDLER - The function starts with preemption disabled once, and must
-                  enable it once (and is allowed to sleep after that). ("Nested
-                  1, IncDec -1")
-    ENTER_ATOMIC - The function enters an atomic section, without regard for
-                   nesting. ("
+    MAY_SLEEP
+        The function might invoke the scheduler, or it might not. It has no
+        effect on the context ("Nested 0, IncDec 0").  Example: mutex_lock
+    WONT_SLEEP
+        The function is guaranteed not to, and is safe to call from atomic
+        context. It has no effect. ("Infinity, IncDec 0") Example: set_esp0
+    EXIT_AND_SLEEP
+        The function starts with preemption disabled once, and must enable it
+        once (and is allowed to sleep after that). ("Nested 1, IncDec -1")
+        Example: page_fault_handler
+    ENTER_ATOMIC
+        The function disables preemption, without regard for nesting.
+        ("Infinity, Disable") Example: disable_interrupts
+    EXIT_ATOMIC
+        The function enables preemption, without regard for nesting.
+        ("Infinity, Enable") Example: enable_interrupts
+    ENTER_ATOMIC_NESTED
+        The function effects another level of preemption disabling. ("Infinity,
+        IncDec 1") Example: spin_lock
+    EXIT_ATOMIC_NESTED
+        The function reverts a level of preemption disabling. ("Infinity, IncDec
+        -1") Example: spin_unlock
 
+Because C's syntax allows for __attribute__ declarations in many places, there
+is some flexibility with how you annotate functions and function pointers. The
+recommended way, however, is that for functions, the annotation goes before the
+return type (but after storage class specifiers), and for function pointers,
+it goes after the argument list:
+
+    static MAY_SLEEP struct tcb *lookup_by_tid(int tid);
+    typedef void (*swexn_handler_t)(void *arg, ureg_t *ureg) MAY_SLEEP;
+
+
+==== 4. Using the tool ====
+
+For each file you wish to check, run: aan [include paths] path/to/file.c
+
+"list_includes.sh" should be used, from the directory with 410kern in it, to
+generate the include paths.
+
+Annotated versions of 410kern/, with aan.h inside, and spec/, are provided. You
+have to annotate the contents of kern/.
+
+No static analysis is perfect, so even with correct annotations there may be
+either spurious warnings or false positives. Errors are generally correct.
+You will have to manually inspect the code for many cases, to determine either
+that a message is spurious, or that there is a real bug, or that your
+annotations were wrong.
+
+Meaning of messages:
+
+- Informational/tracing messages. These are off by default.
+
+- C typechecking warnings. If the code would confuse GCC, it will confuse AAN.
+
+- AAN warnings. These indicate "dubious" patterns to do with annotations, and
+  mean there might be a bug that we didn't notice.
+    - "merging flow" means the branches of an if/switch ended up with different
+      contexts. AAN chooses the "most restrictive" context at the end.
+    - "backward jump": AAN will not do multi-pass, so something that it said was
+      legal on its first pass might become illegal upon this backwards edge in
+      the control flow graph.
+    - "missing annotation"/"invalid annotation": should be pretty clear.
+    - "variadic args contain arrows": passing function pointers as variadic
+      arguments necessarily loses their type information, like casting to void*.
+
+- Errors. This means either AAN thinks it found an atomic-sleep bug or that your
+  annotation was incorrect.
+    - "unmergeable annotations": in a ternary statement that returns function
+      pointers, the annotations for each are incompatible.
+    - "illegal subtyped function pointer assignment": attempt to assign e.g. a
+      MAY_SLEEP function to a WONT_SLEEP pointer.
+    - "illegal invariant function pointer assignment": in reference cells
+      (mutability), even subtyping is illegal.
+    - "illegal function call": attempt to call e.g. a MAY_SLEEP function in
+      atomic context.
+    - "exit context != advertised effect": The professed effect of the function
+      being checked did not match the changed context that came out at the end.
+    - "not all exit contexts match each other": should be pretty clear.
+    - "illegal context effect": Attempt to decrement the preempt counter when
+      it's already zero.
+
+There are certain idioms and tricks you have to watch out for.
+
+- Casting data to and from void*, or even int, is pretty common. If the thing
+  being casted has function pointers anywhere in it (it is one, it is a struct
+  with one, it is an array of them...), the tool will emit a warning, because
+  this might let the code bypass the soundness of the annotation system. More
+  frequently, this is innocent behaviour, so warnings for void* casts are off by
+  default. You can turn them on with --warn-void-casts, and manually inspect
+  each one, for completeness.
+
+- Some functions are "magic" in terms of their annotation; i.e., they are the
+  functions that implement the rules/effects themselves. It's quite likely the
+  tool will error on these; if I had more time, I would have a "MAGIC"
+  annotation which would make the tool ignore them, but I don't, so I don't.
+
+- Some functions have conditional behaviour. This may require annotating them
+  in a way that will cause errors on their implementation but will accurately
+  reflect their use case (for example, if mutex_unlock checks if the scheduler
+  is locked, and only reschedules if it isn't, mark it WONT_SLEEP rather than
+  MAY_SLEEP). Or, it may require refactoring some of the code itself, to make
+  function boundaries you can actually annotate ("outb", when used to ack the
+  current interrupt, should be EXIT_ATOMIC_NESTED, but otherwise not - consider
+  wrapping that particular use case in a "magic" "acknowledge_interrupt"
+  function).
+
+- Interrupt handlers should in most cases be marked either WONT_SLEEP or
+  EXIT_ATOMIC_NESTED - while rescheduling is sometimes appropriate in them,
+  doing mutex_lock in them is wrong, and that's what you're trying to catch.
+  Even though the context switcher itself is the essence of rescheduling, in
+  some kernels it may be wrong to mark it MAY_SLEEP, e.g. if it has to be called
+  with interrupts already off, if it gets called from the timer handler, etc.
+  It's the functions which indirectly call it (mutex, cond, sem, yield) which
+  you care about.
+
+I advise attempting to annotate each student kernel in two phases: start by
+annotating all functions in all header files, and then pick a .c file and
+annotate the functions in that and check just that file until you are content
+with it.
+
+
+==== 5. Feedback ====
+
+Please note these things, and anything else of interest, while using AAN:
+
+- How long did it take for you to get up to speed on the tool? (How long did it
+  it take you to read this guide, to understand the annotation language and
+  rules, etc.)
+
+- How long did it take you to annotate all the *header files* of the student
+  kernel?
+
+- Once the headers were annotated, how long did it take for you to be "content"
+  with AAN's output on each successive .c file that you tested? (i.e., how much
+  time did you spend manually inspecting, and patching up or ignoring the false
+  positives?)
+
+- How long did it take you to be "content" with AAN's output on every .c file in
+  the kernel?
+
+- What "strange coding idioms" did you encounter, that you either needed a
+  special annotation for, or had to refactor across function boundaries to make
+  sense of?
+
+
+==== 6. Bugs ====
+
+The implementation of AAN is not perfect. Its known deficiencies are:
+
+- memcpy() to copy/paste struct contents around may break the system. This can
+  be caught at least by the void* cast warning.
+
+- We currently assume the body of each loop will run exactly once. A loop body
+  that goes, "mutex_lock(); spin_lock();" and possibly goes around again, is
+  clearly wrong, but will not be caught. The fix for this is trivial, but not
+  implemented.
+
+- It would be nice to have a "MAGIC" annotation that indicates a function is
+  right for sure.
+
+- It does not handle "fall-through" cases in switch statements. (It assumes each
+  case can only be entered from the top of the switch. "case 1: spin_lock();
+  case 2: mutex_lock(); spin_lock(); break;" will foil AAN.)
 
 # vim: tw=80 ts=4 expandtab

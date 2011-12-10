@@ -11,7 +11,7 @@
 /* function annotations */
 #define MAY_SLEEP           __attribute__((atomic_all_nighters("might_sleep")))
 #define WONT_SLEEP          __attribute__((atomic_all_nighters("wont_sleep")))
-#define INT_HANDLER         __attribute__((atomic_all_nighters("int_handler","exit_nested")))
+#define EXIT_AND_SLEEP      __attribute__((atomic_all_nighters("nested_one","exit_nested")))
 
 /* context-changing annotations */
 #define ENTER_ATOMIC        __attribute__((atomic_all_nighters("wont_sleep","force_disable")))
@@ -22,7 +22,7 @@
 #else
 #define MAY_SLEEP
 #define WONT_SLEEP
-#define INT_HANDLER
+#define EXIT_AND_SLEEP
 #define ENTER_ATOMIC
 #define EXIT_ATOMIC
 #define ENTER_ATOMIC_NESTED
