@@ -46,7 +46,8 @@ effect (Annotation (_,IncDec y)) (Nested x) =
 
 -- Is the second argument a subtype of the first? (is assignment legal?)
 subtype :: Annotation -> Annotation -> Bool
-subtype (Annotation (Rule r1,_)) (Annotation (Rule r2,_)) = r2 <= r1
+subtype (Annotation (Rule r1,e1)) (Annotation (Rule r2,e2)) =
+    (r2 <= r1) && (e1 == e2)
 
 -- Does the provided code context satisfy the annotation?
 satisfies :: Annotation -> Context -> Bool
