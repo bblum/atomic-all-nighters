@@ -17,7 +17,7 @@
 #define INT_ACK_CURRENT  (NON_SPEC_EOI)
 
 #ifndef ASSEMBLER
-void interrupt_setup(void);
+WONT_SLEEP void interrupt_setup(void);
 
 static inline EXIT_ATOMIC_NESTED void acknowledge_interrupt() {
 	    outb(INT_CTL_PORT, INT_ACK_CURRENT);
