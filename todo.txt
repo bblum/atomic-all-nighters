@@ -3,3 +3,7 @@ milestones:
 
 features:
 	when exiting ifs, effect1 == effect2. what about for?
+
+cleanup:
+	fix unnamed argument bug (XXX in checkDerivedDeclrs)
+	add a "tcwarn" for c typecheck errors, can be suppressed

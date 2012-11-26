@@ -17,6 +17,7 @@ import Language.C.Syntax.AST
 
 import Rules
 import Attributes
+import Constraints
 
 data TypeName = VarName Ident | StructName Ident | TypedefName Ident
                 deriving (Show,Eq,Ord)
