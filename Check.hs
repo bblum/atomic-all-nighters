@@ -12,7 +12,7 @@ import qualified Data.Foldable as F (any)
 import Data.Maybe (mapMaybe,catMaybes,fromMaybe,isNothing,fromJust)
 import Language.C.Data.Ident (Ident,builtinIdent)
 import Language.C.Data.Node (NodeInfo,fileOfNode,posOfNode)
-import Language.C.Data.Position (posRow,posColumn)
+import Language.C.Data.Position (posRow) -- ,posColumn)
 import Language.C.Syntax.AST
 
 import Rules
@@ -331,9 +331,10 @@ emptyMsg = [] :: [String]
 
 msg :: (Show a) => String -> NodeInfo -> String -> [a] -> State Checker ()
 msg prefix nobe str noobs =
-    let (row,col) = (posRow $ posOfNode nobe, posColumn $ posOfNode nobe)
-        mess0 = prefix ++ ": at " ++ fileOfNode nobe ++ ":"
-                ++ (show row) ++ "," ++ (show col) ++ ": " ++ str
+    let -- (row,col) = (posRow $ posOfNode nobe, posColumn $ posOfNode nobe)
+        row = posRow $ posOfNode nobe
+        file = case fileOfNode nobe of Just f -> f; Nothing -> "((unknown))"
+        mess0 = prefix ++ ": at " ++ file ++ ":" ++ (show row) ++ ": " ++ str
         mess = foldl (\output noob -> output ++ "\n\t" ++ show noob) mess0 noobs
     in modify (\s -> s { msgs = mess:(msgs s) })
 
@@ -487,7 +488,7 @@ check (CTranslUnit decls nobe) =
 checkExtDecl :: CExtDecl -> State Checker ()
 checkExtDecl (CDeclExt d) = checkDecl_ d
 checkExtDecl (CFDefExt f) = checkFunDef f
-checkExtDecl (CAsmExt _) = return ()
+checkExtDecl (CAsmExt _ _) = return ()
 
 checkFunDef :: CFunDef -> State Checker ()
 checkFunDef (CFunDef specs declr oldstyle body nobe) =
