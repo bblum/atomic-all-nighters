@@ -1,0 +1,5 @@
+milestones:
+	get constraint solving working w/o flow control
+
+features:
+	when exiting ifs, effect1 == effect2. what about for?
