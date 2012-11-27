@@ -24,7 +24,7 @@ data TypeName = VarName Ident | StructName Ident | TypedefName Ident
 
 data Type = Base
           -- [Type]: arguments; Type: return type; Bool: isVariadic
-          | Arrow [Type] Type Bool (Maybe Annotation)
+          | Arrow [Type] Type Bool (Either Annotation Unknown)
           | Pointer Type
           | Struct (Maybe Ident) (Map.Map Ident Type)
           | IncompleteStruct Ident
@@ -54,13 +54,16 @@ data Checker = Checker {
     branches :: [[Context]],
     -- 'Return' tracking.
     returned :: [[Bool]],
-    ends :: [[Context]]
+    ends :: [[Context]],
+    -- Constraint tracking.
+    constraints :: [Constraint],
+    nextRV :: Int, nextEV :: Int
 }
 
 builtinTypes = Map.fromList
     [(TypedefName $ builtinIdent "__builtin_va_list", Base)]
 
-defaultChecker = Checker undefined builtinTypes [] Map.empty [] [] [] [] []
+defaultChecker = Checker undefined builtinTypes [] Map.empty [] [] [] [] [] [] 0 0
 
 --
 -- Instants.

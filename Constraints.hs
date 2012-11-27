@@ -11,14 +11,16 @@ import qualified Rules as R
 data RV = RV Int String
 data EV = EV Int String
 
+type Unknown = (RV,EV)
+
 instance Eq RV where
     (RV a _) == (RV b _) = a == b
 instance Eq EV where
     (EV a _) == (EV b _) = a == b
-instance Ord RV where
-    (RV a _) <= (RV b _) = a <= b
-instance Ord EV where
-    (EV a _) <= (EV b _) = a <= b
+-- instance Ord RV where -- in case I need to put them in maps, I guess?
+--     (RV a _) <= (RV b _) = a <= b
+-- instance Ord EV where
+--     (EV a _) <= (EV b _) = a <= b
 instance Show RV where
     show (RV _ name) = "R{" ++ name ++ "}"
 instance Show EV where
