@@ -76,7 +76,7 @@ instance Show Type where
             argstr = case args of [] -> "unit"
                                   _ -> intercalate ", " argstrs
         in "(" ++ argstr ++ " -> " ++ show ret
-           ++ " {" ++ maybe "???" show a' ++ "})"
+           ++ " {" ++ either show show a' ++ "})"
     show (Pointer t) = show t ++ "*"
     show (Struct (Just name) contence) =
         "struct " ++ show name ++ " {" ++ show contence ++ "}"
@@ -312,6 +312,7 @@ restoreState oldstate =
     modify (\s -> s { context = context oldstate, types = types oldstate })
 
 -- TODO: deprecate
+-- TODO: merge effect constraints
 mergeState :: NodeInfo -> Checker -> Checker -> State Checker ()
 mergeState nobe state1 state2 =
     let (g1,g2) = (context state1, context state2)
@@ -328,17 +329,40 @@ setTypes :: Map.Map TypeName Type -> State Checker ()
 setTypes ts = modify (\s -> s { types = ts })
 
 --
+-- Constraints
+--
+
+newRV :: String -> State Checker RV
+newRV desc = do rv <- nextRV <$> get
+                modify (\s -> s { nextRV = rv + 1 })
+                return $ RV rv desc
+newEV :: String -> State Checker EV
+newEV desc = do ev <- nextEV <$> get
+                modify (\s -> s { nextEV = ev + 1 })
+                return $ EV ev desc
+newUnknown :: String -> State Checker (RV,EV)
+newUnknown desc = do rv <- newRV desc; ev <- newEV desc; return (rv,ev)
+
+-- TODO: solve constraints progressively each time one is added?
+addConstraint :: Constraint -> State Checker ()
+addConstraint c = modify (\s -> s { constraints = c:(constraints s) })
+
+--
 -- Messaging
 --
 
 emptyMsg = [] :: [String]
 
-msg :: (Show a) => String -> NodeInfo -> String -> [a] -> State Checker ()
-msg prefix nobe str noobs =
+filerowcol :: NodeInfo -> String
+filerowcol nobe =
     let -- (row,col) = (posRow $ posOfNode nobe, posColumn $ posOfNode nobe)
         row = posRow $ posOfNode nobe
         file = case fileOfNode nobe of Just f -> f; Nothing -> "((unknown))"
-        mess0 = prefix ++ ": at " ++ file ++ ":" ++ (show row) ++ ": " ++ str
+    in file ++ ":" ++ (show row)
+
+msg :: (Show a) => String -> NodeInfo -> String -> [a] -> State Checker ()
+msg prefix nobe str noobs =
+    let mess0 = prefix ++ ": at " ++ filerowcol nobe ++ ": " ++ str
         mess = foldl (\output noob -> output ++ "\n\t" ++ show noob) mess0 noobs
     in modify (\s -> s { msgs = mess:(msgs s) })
 
@@ -385,6 +409,7 @@ mergeType doDisjoin nobe t1@(Arrow args1 ret1 iv1 a1) t2@(Arrow args2 ret2 iv2 a
        when (iv1 /= iv2) $ warn nobe "variadicity mismatch in fn merge" emptyMsg
        let iv = iv1 || iv2
        case (a1,a2) of
+           -- TODO constraint
            (Just a1', Just a2') -> -- good case
                case (if doDisjoin then disjoin else intersect) a1' a2' of
                    a@(Just _) -> return $ Arrow args ret iv a
@@ -411,6 +436,7 @@ mergeType doDisjoin nobe t1 t2 =
 verifyAssign :: NodeInfo -> Bool -> Type -> Type -> State Checker ()
 verifyAssign nobe subtyping t1@(Arrow args1 ret1 iv1 a1) t2@(Arrow args2 ret2 iv2 a2) =
     let verifyAnnotation True =
+            -- TODO constraint
             case (liftM2 subtype a1 a2) of
                 Just False ->
                     err nobe "illegal subtyped function pointer assignment"
@@ -470,6 +496,7 @@ verifyCall nobe a =
                [M "target function" $ show a, M "while in context" $ show g]
 
 -- Mashes an annotation into an arrow type that might already have one.
+-- TODO constraint
 injectAnnotation :: NodeInfo -> Type -> Maybe Annotation -> State Checker Type
 injectAnnotation nobe (Arrow args ret iv (Just a0)) (Just a) =
     do warn nobe "multiply-differently-annotated function" [a0,a]
@@ -666,14 +693,14 @@ checkAttr (attr@(CAttr name es nobe)) =
           return a'
     else return Nothing
 
-checkAttrs :: NodeInfo -> [CAttr] -> State Checker (Maybe Annotation)
+checkAttrs :: NodeInfo -> [CAttr] -> State Checker (Either Annotation Unknown)
 checkAttrs nobe attrs =
     do annos <- catMaybes <$> mapM checkAttr attrs
        case annos of
-           [] -> return Nothing
-           [a] -> return $ Just a
+           [] -> Right <$> (newUnknown $ filerowcol nobe)
+           [a] -> return $ Left a
            a:rest -> do warn nobe "ignoring extra annotations" rest
-                        return $ Just a
+                        return $ Left a
 
 -- Declarators
 -- When called from fundef, need to add the args to the context. otherwise not.
@@ -956,6 +983,7 @@ checkExpr (CCall e args nobe) =
                              when (length args /= length argtypes) $
                                  warn nobe "argument number mismatch"
                                      [M "expected" argtypes]
+                     -- TODO constraints
                      case a' of
                          Just a ->
                              do verifyCall nobe a

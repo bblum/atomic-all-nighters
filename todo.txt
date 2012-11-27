@@ -1,5 +1,7 @@
 milestones:
 	get constraint solving working w/o flow control
+		add constraints where TODO constraints are
+		make current-context possibly symbolic
 
 features:
 	when exiting ifs, effect1 == effect2. what about for?

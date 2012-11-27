@@ -27,15 +27,15 @@ instance Show EV where
     show (EV _ name) = "E{" ++ name ++ "}"
 
 -- The elements of constraint expressions. Can be variables or fixed constants.
-newtype R = R (Either RV R.Rule) deriving Eq
-newtype E = E (Either EV R.Effect) deriving Eq
+data R = RuleVar   RV | RuleConst   R.Rule   deriving Eq
+data E = EffectVar EV | EffectConst R.Effect deriving Eq
 
 instance Show R where
-    show (R (Left rv)) = show rv
-    show (R (Right rule)) = show rule
+    show (RuleVar rv) = show rv
+    show (RuleConst rule) = show rule
 instance Show E where
-    show (E (Left ev)) = show ev
-    show (E (Right effect)) = show effect
+    show (EffectVar ev) = show ev
+    show (EffectConst effect) = show effect
 
 -- Note: the "<=" in the rule constraint is the subtyping comparison, not
 -- the numeric comparison, so it's reversed (e.g., infinity <= 0).
