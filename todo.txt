@@ -4,8 +4,14 @@ milestones:
 		make current-context possibly symbolic
 
 features:
-	when exiting ifs, effect1 == effect2. what about for?
+	when exiting ifs, effect1 == effect2
+	with for loops:
+		back-edge net effect has to be 0
+		advanced: have a "warning level constraint" to check no-changes
+	when dealing with Enable(+inf)/Disable(-inf), process the [E]s in-order
+
 
 cleanup:
 	fix unnamed argument bug (XXX in checkDerivedDeclrs)
 	add a "tcwarn" for c typecheck errors, can be suppressed
+	hmm, I don't like the way RuleConstraint's 'r1' is always RuleConst?

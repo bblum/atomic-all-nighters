@@ -34,9 +34,15 @@ data Type = Base
 
 data MessageLine a = (Show a) => M String a
 
+-- Symbolic context. The context at any point in the code flow may not
+-- necessarily be known concretely, if (a) a fn with unknown Effect was called
+-- previously, or (b) the current function's Rule is unknown, or of course both.
+type SContext = (Context, [E])
+
 data Checker = Checker {
-    -- The current context of the code
-    context :: Context,
+    -- The current context of the code. If the list of EVs is empty, the
+    -- current context is known for sure. Otherwise, generate constraints.
+    context :: SContext,
     -- identifier mappings
     types :: Map.Map TypeName Type,
     -- output
@@ -44,19 +50,19 @@ data Checker = Checker {
     -- value is "Left gs" if the label hasn't been hit yet (a list of all
     -- contexts that the label is entered with), and "Right g" if it has (the
     -- context that was decided upon for its entry, for future backwards gotos)
-    labels :: Map.Map Ident (Either [Context] Context),
+    labels :: Map.Map Ident (Either [SContext] SContext),
     -- break and continue targets. these represent the contexts encountered at
     -- each break and continue statement, to be collected by the call at the
     -- construct they belong to.
-    breaks :: [[Context]],
-    continues :: [[Context]],
+    breaks :: [[SContext]],
+    continues :: [[SContext]],
     -- The end contexts for all the case branches in a switch statement.
-    branches :: [[Context]],
+    branches :: [[SContext]],
     -- 'Return' tracking.
     returned :: [[Bool]],
-    ends :: [[Context]],
+    ends :: [[SContext]],
     -- Constraint tracking.
-    constraints :: [Constraint],
+    constraints :: [Constraint], -- TODO: In this list, track "if fail" error msgs
     nextRV :: Int, nextEV :: Int
 }
 
@@ -95,7 +101,7 @@ enterLoop =
     modify (\s -> s { breaks = []:(breaks s), continues = []:(continues s) })
 
 -- Returns the broken contexts and the continued contexts, respectively.
-exitLoop :: State Checker ([Context], [Context])
+exitLoop :: State Checker ([SContext], [SContext])
 exitLoop =
     do bs <- breaks <$> get
        cs <- continues <$> get
@@ -128,7 +134,7 @@ enterSwitch =
     modify (\s -> s { breaks = []:(breaks s), branches = []:(branches s),
                       returned = []:(returned s) })
 
-exitSwitch :: State Checker [Context]
+exitSwitch :: State Checker [SContext]
 exitSwitch =
     do ks <- breaks <$> get
        bs <- branches <$> get
@@ -140,7 +146,7 @@ exitSwitch =
                   return k -- XXX FIXME: doesn't account for fallthrough;
            _ -> error "inconsistent break or return stack exiting switch"
 
-enterCase :: State Checker Context
+enterCase :: State Checker SContext
 enterCase =
     do rs <- returned <$> get
        case rs of
@@ -148,7 +154,7 @@ enterCase =
            [] -> error "inconsistent return stack entering case"
        getContext
 
-exitCase :: Context -> State Checker ()
+exitCase :: SContext -> State Checker ()
 exitCase g0 =
     do g <- getContext
        ss <- branches <$> get
@@ -175,7 +181,7 @@ exitIf nobe =
            _ -> error $ "inconsistent branch or return stack exiting if"
                         ++ show (bs,rs) ++ show nobe
 
-enterBranch :: State Checker Context
+enterBranch :: State Checker SContext
 enterBranch =
     do rs <- returned <$> get
        case rs of
@@ -183,7 +189,7 @@ enterBranch =
            [] -> error "inconsistent return stack entering branch"
        getContext
 
-exitBranch :: Context -> State Checker Context
+exitBranch :: SContext -> State Checker SContext
 exitBranch g0 =
     do g <- getContext
        ss <- branches <$> get
@@ -209,27 +215,28 @@ doReturn nobe =
            ((False:r1s):rs') -> modify (\s -> s { returned = (True:r1s):rs' })
            _ -> error "inconsistent returned stack"
 
-checkMergeContexts :: NodeInfo -> Context -> [Context] -> State Checker ()
+checkMergeContexts :: NodeInfo -> SContext -> [SContext] -> State Checker ()
 checkMergeContexts nobe g0 gs =
     when (any (/= g0) gs) $
         warn nobe "merging flow" $
             [M "current context" g0] ++ map (M "incoming context") gs
             ++ [M "most restrictive" $ minimum $ g0:gs]
 
-mergeContexts :: NodeInfo -> Context -> [Context] -> State Checker ()
+-- TODO
+mergeContexts :: NodeInfo -> SContext -> [SContext] -> State Checker ()
 mergeContexts nobe g0 gs =
     do let g = minimum $ g0:gs
        checkMergeContexts nobe g0 gs
        modify (\s -> s { context = g })
 
-checkBackEdge :: NodeInfo -> Context -> Context -> State Checker ()
+checkBackEdge :: NodeInfo -> SContext -> SContext -> State Checker ()
 checkBackEdge nobe g0 g =
     do g <- getContext
        when (g < g0) $
            warn nobe "backward jump with a more restrictive context"
                [M "old context" g0, M "incoming context" g]
 
-gotoLabel :: NodeInfo -> Context -> Ident -> State Checker ()
+gotoLabel :: NodeInfo -> SContext -> Ident -> State Checker ()
 gotoLabel nobe g name =
     do ls <- labels <$> get
        case Map.lookup name ls of
@@ -246,7 +253,7 @@ gotoLabel nobe g name =
                   info nobe "forward goto to label with context"
                        [M "target" $ show name, M "incoming" $ show g]
 
-meetLabel :: NodeInfo -> Context -> Ident -> State Checker ()
+meetLabel :: NodeInfo -> SContext -> Ident -> State Checker ()
 meetLabel nobe g0 name =
     do ls <- labels <$> get
        case Map.lookup name ls of
@@ -304,7 +311,7 @@ addType nobe name t =
 getState :: State Checker Checker
 getState = get
 
-getContext :: State Checker Context
+getContext :: State Checker SContext
 getContext = context <$> get
 
 restoreState :: Checker -> State Checker ()
@@ -319,7 +326,7 @@ mergeState nobe state1 state2 =
     in do when (g1 /= g2) $ warn nobe "context mismatch in flow control" [g1,g2]
           modify (\s -> s { context = min g1 g2 }) -- use the subbest type
 
-setContext :: Context -> State Checker ()
+setContext :: SContext -> State Checker ()
 setContext g = modify (\s -> s { context = g })
 
 getTypes :: State Checker (Map.Map TypeName Type)
@@ -458,7 +465,7 @@ verifyAssign nobe subtyping t1@(Arrow args1 ret1 iv1 a1) t2@(Arrow args2 ret2 iv
     in do when (length args1 /= length args2) $
               warn nobe "verification argument count mismatch" [t1,t2]
           when (iv1 /= iv2) $
-              warn nobe "varidicity mismatch in fn verification" emptyMsg
+              warn nobe "variadicity mismatch in fn verification" emptyMsg
           verifyAnnotation subtyping
           verifyAssign nobe subtyping ret1 ret2
           mapM_ (uncurry $ verifyAssign nobe subtyping)
@@ -488,21 +495,46 @@ verifyAssign nobe subtyping t1 t2 =
     else
         info nobe "verification type mismatch (no arrows)" [t1,t2]
 
-verifyCall :: NodeInfo -> Annotation -> State Checker ()
-verifyCall nobe a =
-    do g <- getContext
-       when (not $ satisfies a g) $
-           err nobe "illegal function call"
-               [M "target function" $ show a, M "while in context" $ show g]
+verifyCall :: NodeInfo -> Either Annotation Unknown -> State Checker ()
+verifyCall nobe au =
+    do (g,es) <- getContext
+       case (au,es) of
+           (Left a,[]) -> -- everything is known, wee
+               -- original 799 code here
+               do -- Check rule
+                  when (not $ satisfies a g) $
+                      err nobe "illegal function call"
+                          [M "target function" $ show a, M "while in context" $ show g]
+                  -- Check effect
+                  case effect a g of
+                      Just g2 -> do info nobe "changed context"
+                                        [g2]
+                                    setContext (g2,[])
+                      Nothing -> err nobe "illegal context effect"
+                                     [M "attempted call " $ show a,
+                                      M "current context" $ show g]
+           (Left (Annotation (r,e)),_) -> -- need to generate a constraint
+               do addConstraint $
+                      RuleConstraint (RuleConst r) (RuleConst $ Rule g) es
+                  -- Effecting the context directly could screw up the ordering;
+                  -- in cases of Enable(+inf)/Disable(-inf), commutativity fails
+                  setContext (g, (EffectConst e):es)
+           (Right (rv,ev),_) -> -- need to generate a constraint
+               do addConstraint $
+                      RuleConstraint (RuleVar rv) (RuleConst $ Rule g) es
+                  setContext (g, (EffectVar ev):es)
 
 -- Mashes an annotation into an arrow type that might already have one.
 -- TODO constraint
 injectAnnotation :: NodeInfo -> Type -> Maybe Annotation -> State Checker Type
-injectAnnotation nobe (Arrow args ret iv (Just a0)) (Just a) =
+injectAnnotation nobe (Arrow args ret iv (Left a0)) (Just a) =
     do warn nobe "multiply-differently-annotated function" [a0,a]
-       return $ Arrow args ret iv (Just a)
-injectAnnotation nobe (Arrow args ret iv Nothing) (Just a) =
-    return $ Arrow args ret iv (Just a)
+       return $ Arrow args ret iv (Left a)
+injectAnnotation nobe (Arrow args ret iv (Right (rv,ev))) (Just a) =
+    -- Was previously symbolic, now concrete. Use the concrete value always.
+    do -- TODO FIXME: Need to filter over the existing constraints and
+       -- substitute out the concrete constraint for them.
+       return $ Arrow args ret iv (Left a)
 injectAnnotation nobe t (Just a) =
     do warn nobe "ignoring annotation on non-function" [a]
        return t
@@ -971,7 +1003,7 @@ checkExpr (CCall e args nobe) =
             do t0 <- checkExpr e; verifyAssign nobe True t t0; return t0
     in do t <- checkExpr e
           case t of
-              Arrow argtypes ret isVariadic a' ->
+              Arrow argtypes ret isVariadic a ->
                   do callargtypes <- mapM checkArg $ zip argtypes args
                      case isVariadic of
                          True ->
@@ -983,22 +1015,7 @@ checkExpr (CCall e args nobe) =
                              when (length args /= length argtypes) $
                                  warn nobe "argument number mismatch"
                                      [M "expected" argtypes]
-                     -- TODO constraints
-                     case a' of
-                         Just a ->
-                             do verifyCall nobe a
-                                g <- getContext
-                                case effect a g of
-                                    Just g2 -> do info nobe "changed context"
-                                                      [g2]
-                                                  setContext g2
-                                    Nothing -> err nobe "illegal context effect"
-                                                   [M "attempted call " $ show a,
-                                                    M "current context" $ show g]
-                         Nothing ->
-                             do g <- getContext
-                                warn nobe "missing annotation during call"
-                                    [M "current context" g]
+                     verifyCall nobe a
                      return ret
               _ ->
                   do warn nobe "can't call non-arrow type" [t]

@@ -47,4 +47,4 @@ instance Show Constraint where
     show (EffectConstraint e es) =
         show e ++ "=" ++ (intercalate "+" $ map show es)
     show (RuleConstraint r r1 es) =
-        show r ++ "<=" ++ show r1 ++ (intercalate "+" $ map show es)
+        show r ++ "<=" ++ show r1 ++ "+" ++ (intercalate "+" $ map show es)
