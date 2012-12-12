@@ -5,7 +5,7 @@ milestones:
 		make sure that splitting/merging for flow doesn't overwrite msgs/constraints/nextRV/EV
 	figure out how to sanely report errors in flow control
 		checkBackEdge
-		mergeContexts
+		mergeContexts/checkMerge
 		etc?
 
 

@@ -217,17 +217,24 @@ doReturn nobe =
 
 checkMergeContexts :: NodeInfo -> SContext -> [SContext] -> State Checker ()
 checkMergeContexts nobe g0 gs =
-    when (any (/= g0) gs) $
-        warn nobe "merging flow" $
-            [M "current context" g0] ++ map (M "incoming context") gs
-            ++ [M "most restrictive" $ minimum $ g0:gs]
+    let msg = if all (null . snd) (g0:gs) then "merging flow"
+              else "merging symbolic flow"
+    in when (any (/= g0) gs) $
+           warn nobe "merging flow" $
+               [M "current context" g0] ++ map (M "incoming context") gs
+               -- ++ [M "most restrictive" $ minimum $ g0:gs]
 
--- TODO
-mergeContexts :: NodeInfo -> SContext -> [SContext] -> State Checker ()
+mergeContexts :: NodeInfo -> SContext -> [SContext] -> State Checker SContext
 mergeContexts nobe g0 gs =
-    do let g = minimum $ g0:gs
+    do let g = if all (null . snd) (g0:gs) then
+                   (minimum $ map fst $ g0:gs, [])
+               else
+                   g0 -- don't bother; checkmerge will warn
        checkMergeContexts nobe g0 gs
        modify (\s -> s { context = g })
+       return g
+
+mergeContexts_ nobe g0 gs = mergeContexts nobe g0 gs >> return ()
 
 checkBackEdge :: NodeInfo -> SContext -> SContext -> State Checker ()
 checkBackEdge nobe g0 g =
@@ -265,8 +272,7 @@ meetLabel nobe g0 name =
     do ls <- labels <$> get
        case Map.lookup name ls of
            Just (Left gs) ->
-               do let g = minimum $ g0:gs
-                  mergeContexts nobe g0 gs
+               do g <- mergeContexts nobe g0 gs
                   modify (\s -> s { labels = Map.insert name (Right g) ls})
            Just (Right _) ->
                do err nobe "meeting an already-met label (duplicate label?)"
@@ -430,21 +436,23 @@ mergeType doDisjoin nobe t1@(Arrow args1 ret1 iv1 a1) t2@(Arrow args2 ret2 iv2 a
        when (iv1 /= iv2) $ warn nobe "variadicity mismatch in fn merge" emptyMsg
        let iv = iv1 || iv2
        case (a1,a2) of
-           -- TODO constraint
-           (Just a1', Just a2') -> -- good case
+           -- We throw in the towel on merging constraints here. If one is symbolic,
+           -- we ignore it and take the other one; if both are, we take the left one.
+           -- I don't expect this will ever come up so I'm not bothering to support it.
+           (Left a1', Left a2') -> -- good case
                case (if doDisjoin then disjoin else intersect) a1' a2' of
-                   a@(Just _) -> return $ Arrow args ret iv a
+                   Just a -> return $ Arrow args ret iv $ Left a
                    Nothing -> do err nobe "unmergable annotations" [a1',a2']
-                                 return $ Arrow args ret iv (Just a1') -- boo
-           (a@(Just _), Nothing) ->
-               do warn nobe "missing annotation for merge on right branch" [t1,t2]
+                                 return $ Arrow args ret iv (Left a1') -- boo
+           (a@(Left _), Right _) ->
+               do warn nobe "ignoring symbolic type for merge on right branch" [t1,t2]
                   return $ Arrow args ret iv a
-           (Nothing, a@(Just _)) ->
-               do warn nobe "missing annotation for merge on left branch" [t1,t2]
+           (Right _, a@(Left _)) ->
+               do warn nobe "ignoring symbolic type for merge on left branch" [t1,t2]
                   return $ Arrow args ret iv a
-           (Nothing, Nothing) ->
-               do warn nobe "missing annotation for merge on both branches" [t1,t2]
-                  return $ Arrow args ret iv Nothing
+           (a@(Right _), Right _) ->
+               do warn nobe "arbitrarily merging symbolic types" [t1,t2]
+                  return $ Arrow args ret iv a
 mergeType doDisjoin nobe (IncompleteStruct _) t2 =
     mergeType doDisjoin nobe Base t2
 mergeType doDisjoin nobe t1 (IncompleteStruct _) =
@@ -757,7 +765,7 @@ checkDeclr t0 addArgs (CDeclr name' deriveds asmname attrs nobe) =
        -- see also: getType
        let t = case t' of (Pointer x@(Arrow _ _ _ _)) -> x; _ -> t'
        a' <- checkAttrs nobe attrs
-       t2 <- injectAnnotation nobe t a'
+       t2 <- injectAnnotation nobe t (case a' of Left a -> Just a; _ -> Nothing)
        return (name', t2)
 
 checkDerivedDeclrs :: Type -> Bool -> [CDerivedDeclr] -> State Checker Type
@@ -868,7 +876,7 @@ checkStat (CIf e s1 s2' nobe) =
        g2 <- exitBranch g0
        (returned1,returned2) <- exitIf nobe -- See which branches did return or not.
        case (returned1,returned2) of
-           (False,False) -> mergeContexts nobe g1 [g2]
+           (False,False) -> mergeContexts_ nobe g1 [g2]
            (True,False) -> setContext g2
            (False,True) -> setContext g1
            _ -> return () -- Means we returned wholesale.
@@ -879,7 +887,7 @@ checkStat (CSwitch e s nobe) =
        enterSwitch
        checkStat_ s
        gs <- exitSwitch
-       mergeContexts nobe g0 gs
+       mergeContexts_ nobe g0 gs
        return Base
 checkStat (CWhile e s isDoWhile nobe) =
     do g0 <- getContext
@@ -891,7 +899,7 @@ checkStat (CWhile e s isDoWhile nobe) =
        g <- getContext
        checkMergeContexts nobe g0 cs -- continues go backwards
        checkBackEdge nobe g0 g
-       mergeContexts nobe g bs -- breaks go forwards
+       mergeContexts_ nobe g bs -- breaks go forwards
        return Base
 checkStat (CFor e1'' e2' e3' s nobe) =
     do ts <- getTypes
@@ -905,11 +913,11 @@ checkStat (CFor e1'' e2' e3' s nobe) =
        checkStat_ s
        (bs,cs) <- exitLoop
        g1 <- getContext
-       mergeContexts nobe g1 cs -- continues go forwards
+       mergeContexts_ nobe g1 cs -- continues go forwards
        maybe (return ()) checkExpr_ e3'
        g2 <- getContext
        checkBackEdge nobe g0 g2
-       mergeContexts nobe g2 bs -- breaks go even more forwards
+       mergeContexts_ nobe g2 bs -- breaks go even more forwards
        return Base
 checkStat (CGoto name nobe) =
     do g <- getContext
