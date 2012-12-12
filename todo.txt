@@ -2,6 +2,12 @@ milestones:
 	get constraint solving working w/o flow control
 		add constraints where TODO constraints are
 		make current-context possibly symbolic
+		make sure that splitting/merging for flow doesn't overwrite msgs/constraints/nextRV/EV
+	figure out how to sanely report errors in flow control
+		checkBackEdge
+		mergeContexts
+		etc?
+
 
 features:
 	when exiting ifs, effect1 == effect2

@@ -232,9 +232,16 @@ mergeContexts nobe g0 gs =
 checkBackEdge :: NodeInfo -> SContext -> SContext -> State Checker ()
 checkBackEdge nobe g0 g =
     do g <- getContext
-       when (g < g0) $
-           warn nobe "backward jump with a more restrictive context"
-               [M "old context" g0, M "incoming context" g]
+       case (g0,g) of
+           ((g0',[]),(g',[])) ->
+               -- old 799 case
+               when (g' < g0') $
+                   warn nobe "backward jump with a more restrictive context"
+                       [M "old context" g0, M "incoming context" g]
+           _ ->
+               when (g /= g0) $
+                   warn nobe "backward jump with a symbolic context"
+                       [M "old context" g0, M "incoming context" g]
 
 gotoLabel :: NodeInfo -> SContext -> Ident -> State Checker ()
 gotoLabel nobe g name =
@@ -318,13 +325,20 @@ restoreState :: Checker -> State Checker ()
 restoreState oldstate =
     modify (\s -> s { context = context oldstate, types = types oldstate })
 
--- TODO: deprecate
--- TODO: merge effect constraints
+-- This could well be deprecated. Only used when processing e1?e2:e3.
 mergeState :: NodeInfo -> Checker -> Checker -> State Checker ()
 mergeState nobe state1 state2 =
-    let (g1,g2) = (context state1, context state2)
-    in do when (g1 /= g2) $ warn nobe "context mismatch in flow control" [g1,g2]
-          modify (\s -> s { context = min g1 g2 }) -- use the subbest type
+    case (context state1, context state2) of
+        ((g1,[]),(g2,[])) ->
+            -- old, nonsymbolic code
+            do when (g1 /= g2) $
+                   warn nobe "context mismatch in flow control" [g1,g2]
+               modify (\s -> s { context = (min g1 g2,[]) }) -- use subbest type
+        (g1,g2) ->
+            do when (g1 /= g2) $
+                   warn nobe "symbolic context mismatch in flow control" [g1,g2]
+               -- Arbitrary. Not much to be done here.
+               modify (\s -> s { context = g2 })
 
 setContext :: SContext -> State Checker ()
 setContext g = modify (\s -> s { context = g })
@@ -951,7 +965,8 @@ checkExpr (CCond e1 e2 e3 nobe) =
                       state3 <- getState
                       return (t2,state2,t3,state3)
                Nothing -> -- "x ?: y" means "x ? x : y"
-                   do t3 <- checkExpr e3
+                   do _ <- checkExpr e1
+                      t3 <- checkExpr e3
                       state3 <- getState
                       return (t1,oldstate,t3,state3)
        mergeState nobe state2 state3
