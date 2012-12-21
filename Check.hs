@@ -37,7 +37,7 @@ data MessageLine a = (Show a) => M String a
 -- Symbolic context. The context at any point in the code flow may not
 -- necessarily be known concretely, if (a) a fn with unknown Effect was called
 -- previously, or (b) the current function's Rule is unknown, or of course both.
-type SContext = (Context, [E])
+type SContext = (R, [E])
 
 data Checker = Checker {
     -- The current context of the code. If the list of EVs is empty, the
@@ -384,7 +384,10 @@ filerowcol :: NodeInfo -> String
 filerowcol nobe =
     let -- (row,col) = (posRow $ posOfNode nobe, posColumn $ posOfNode nobe)
         row = posRow $ posOfNode nobe
-        file = case fileOfNode nobe of Just f -> f; Nothing -> "((unknown))"
+        -- Two different lines for two different version of Language.C.
+        -- Uncomment whichever one works.
+        --- file = case fileOfNode nobe of Just f -> f; Nothing -> "((unknown))"
+        file = fileOfNode nobe
     in file ++ ":" ++ (show row)
 
 msg :: (Show a) => String -> NodeInfo -> String -> [a] -> State Checker ()
@@ -460,35 +463,37 @@ mergeType doDisjoin nobe t1 (IncompleteStruct _) =
 mergeType doDisjoin nobe t1 t2 =
     do warn nobe "type mismatch during merge" [t1,t2]; return Base
 
+toRE :: Either Annotation Unknown -> (R,E)
+toRE (Left (Annotation(r,e))) = (RuleConst r, EffectConst e)
+toRE (Right (rv,ev)) = (RuleVar rv, EffectVar ev)
+
 -- TODO: need to worry about extra pointer indirections around arrows? &malloc
 -- The bool argument expresses whether subtyping is allowed.
 verifyAssign :: NodeInfo -> Bool -> Type -> Type -> State Checker ()
 verifyAssign nobe subtyping t1@(Arrow args1 ret1 iv1 a1) t2@(Arrow args2 ret2 iv2 a2) =
-    let verifyAnnotation True =
-            -- TODO constraint
-            case (liftM2 subtype a1 a2) of
-                Just False ->
-                    err nobe "illegal subtyped function pointer assignment"
-                        [M "dest (req'd supertype)" $ fromJust a1,
-                         M "src (req'd subtype)" $ fromJust a2]
-                Just True -> return ()
-                Nothing ->
-                  warn nobe "missing annotation during assignment"
-                      [M "dest (req'd supertype)" a1, M "src (req'd subtype)" a2]
-        verifyAnnotation False =
-            case (liftM2 (==) a1 a2) of
-                Just False ->
-                    err nobe "illegal invariant function pointer assignment"
-                        [M "dest" $ fromJust a1, M "src" $ fromJust a2]
-                Just True -> return ()
-                Nothing ->
-                    warn nobe "missing annotation during invariant assignment"
-                        [M "dest" a1, M "src" a2]
+    let constrainAssignment (r1,e1) (r2,e2) =
+            do addConstraint $ EffectConstraint e1 [e2]
+               addConstraint $
+                   if subtyping then RuleConstraint r1 r2 []
+                   else InvariantConstraint r1 r2
+        verifyAnnotation =
+            case (a1,a2) of
+                (Left a1', Left a2') ->
+                    if subtyping then
+                        when (not $ subtype a1' a2') $
+                            err nobe "illegal subtyped function pointer assignment"
+                                [M "dest (req'd supertype)" a1',
+                                 M "src  (req'd subtype)"   a2']
+                    else
+                        when (a1' /= a2') $
+                            err nobe "illegal invariant function pointer assignment"
+                                [M "dest" a1', M "src" a2']
+                _ -> constrainAssignment (toRE a1) (toRE a2)
     in do when (length args1 /= length args2) $
               warn nobe "verification argument count mismatch" [t1,t2]
           when (iv1 /= iv2) $
               warn nobe "variadicity mismatch in fn verification" emptyMsg
-          verifyAnnotation subtyping
+          verifyAnnotation
           verifyAssign nobe subtyping ret1 ret2
           mapM_ (uncurry $ verifyAssign nobe subtyping)
                 (zip args2 args1) -- contravariant!
@@ -520,8 +525,8 @@ verifyAssign nobe subtyping t1 t2 =
 verifyCall :: NodeInfo -> Either Annotation Unknown -> State Checker ()
 verifyCall nobe au =
     do (g,es) <- getContext
-       case (au,es) of
-           (Left a,[]) -> -- everything is known, wee
+       case (g,au,es) of
+           (RuleConst (Rule g), Left a, []) -> -- everything is known, wee
                -- original 799 code here
                do -- Check rule
                   when (not $ satisfies a g) $
@@ -535,15 +540,15 @@ verifyCall nobe au =
                       Nothing -> err nobe "illegal context effect"
                                      [M "attempted call " $ show a,
                                       M "current context" $ show g]
-           (Left (Annotation (r,e)),_) -> -- need to generate a constraint
+           (_,Left (Annotation (r,e)),_) -> -- need to generate a constraint
                do addConstraint $
-                      RuleConstraint (RuleConst r) (RuleConst $ Rule g) es
+                      RuleConstraint (RuleConst r) g es
                   -- Effecting the context directly could screw up the ordering;
                   -- in cases of Enable(+inf)/Disable(-inf), commutativity fails
                   setContext (g, (EffectConst e):es)
-           (Right (rv,ev),_) -> -- need to generate a constraint
+           (_,Right (rv,ev),_) -> -- need to generate a constraint
                do addConstraint $
-                      RuleConstraint (RuleVar rv) (RuleConst $ Rule g) es
+                      RuleConstraint (RuleVar rv) g es
                   setContext (g, (EffectVar ev):es)
 
 -- Mashes an annotation into an arrow type that might already have one.
@@ -573,7 +578,8 @@ check (CTranslUnit decls nobe) =
 checkExtDecl :: CExtDecl -> State Checker ()
 checkExtDecl (CDeclExt d) = checkDecl_ d
 checkExtDecl (CFDefExt f) = checkFunDef f
-checkExtDecl (CAsmExt _ _) = return ()
+checkExtDecl (CAsmExt _) = return ()
+-- checkExtDecl (CAsmExt _ _) = return ()
 
 checkFunDef :: CFunDef -> State Checker ()
 checkFunDef (CFunDef specs declr oldstyle body nobe) =
@@ -591,14 +597,15 @@ checkFunDef (CFunDef specs declr oldstyle body nobe) =
           when (not $ null oldstyle) $
               warn nobe "old-style args not supported in function def'n" [name']
           t <- injectAnnotation nobe t0 a'
+          let a'' = case t of (Arrow _ _ _ x) -> x; _ -> error "Non-arrow func??"
           -- add function name to context
           -- this has to be done twice, for the function to be scoped inside
           -- itself and also after dropping the type mappings from inside.
           addFunc name' t
           -- traverse function body; save old context in case of nested function
-          g <- case a' of Just a -> return $ entryContext a
-                          Nothing -> do warn nobe "missing annotation" [name']
-                                        return $ entryDefault
+          g <- case a'' of
+                   Left a -> return $ (RuleConst $ Rule $ entryContext a, [])
+                   Right (rv,ev) -> return $ (RuleVar rv, [])
           info nobe "entering function with context" [g]
           gold <- getContext
           setContext g
@@ -747,11 +754,12 @@ checkAttr (attr@(CAttr name es nobe)) =
           return a'
     else return Nothing
 
-checkAttrs :: NodeInfo -> [CAttr] -> State Checker (Either Annotation Unknown)
-checkAttrs nobe attrs =
+checkAttrs :: NodeInfo -> Maybe Ident -> [CAttr]
+              -> State Checker (Either Annotation Unknown)
+checkAttrs nobe name' attrs =
     do annos <- catMaybes <$> mapM checkAttr attrs
        case annos of
-           [] -> Right <$> (newUnknown $ filerowcol nobe)
+           [] -> Right <$> (newUnknown $ filerowcol nobe) -- TODO: use name' to look up an already used unknown
            [a] -> return $ Left a
            a:rest -> do warn nobe "ignoring extra annotations" rest
                         return $ Left a
@@ -760,23 +768,24 @@ checkAttrs nobe attrs =
 -- When called from fundef, need to add the args to the context. otherwise not.
 checkDeclr :: Type -> Bool -> CDeclr -> State Checker (Maybe Ident, Type)
 checkDeclr t0 addArgs (CDeclr name' deriveds asmname attrs nobe) =
-    do t' <- checkDerivedDeclrs t0 addArgs deriveds
+    do t' <- checkDerivedDeclrs t0 name' addArgs deriveds
        -- strip the outermost "pointer" type derived-decl from function pointers.
        -- see also: getType
        let t = case t' of (Pointer x@(Arrow _ _ _ _)) -> x; _ -> t'
-       a' <- checkAttrs nobe attrs
+       a' <- checkAttrs nobe name' attrs
        t2 <- injectAnnotation nobe t (case a' of Left a -> Just a; _ -> Nothing)
        return (name', t2)
 
-checkDerivedDeclrs :: Type -> Bool -> [CDerivedDeclr] -> State Checker Type
-checkDerivedDeclrs t0 addArgs [] = return t0
-checkDerivedDeclrs t0 addArgs ((CPtrDeclr quals nobe):rest) =
-    Pointer <$> checkDerivedDeclrs t0 addArgs rest
-checkDerivedDeclrs t0 addArgs ((CArrDeclr quals size nobe):rest) =
-    do checkArrSize size; Pointer <$> checkDerivedDeclrs t0 addArgs rest
-checkDerivedDeclrs t0 addArgs ((CFunDeclr args'' attrs nobe):rest) =
-    do t <- checkDerivedDeclrs t0 addArgs rest
-       a' <- checkAttrs nobe attrs
+checkDerivedDeclrs :: Type -> Maybe Ident -> Bool -> [CDerivedDeclr]
+                      -> State Checker Type
+checkDerivedDeclrs t0 name' addArgs [] = return t0
+checkDerivedDeclrs t0 name' addArgs ((CPtrDeclr quals nobe):rest) =
+    Pointer <$> checkDerivedDeclrs t0 name' addArgs rest
+checkDerivedDeclrs t0 name' addArgs ((CArrDeclr quals size nobe):rest) =
+    do checkArrSize size; Pointer <$> checkDerivedDeclrs t0 name' addArgs rest
+checkDerivedDeclrs t0 name' addArgs ((CFunDeclr args'' attrs nobe):rest) =
+    do t <- checkDerivedDeclrs t0 name' addArgs rest
+       a' <- checkAttrs nobe name' attrs
        (args,isVariadic) <-
            case args'' of
                Left oldstyle ->

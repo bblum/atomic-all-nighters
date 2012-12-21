@@ -2,7 +2,7 @@ milestones:
 	get constraint solving working w/o flow control
 		add constraints where TODO constraints are
 		make current-context possibly symbolic
-		make sure that splitting/merging for flow doesn't overwrite msgs/constraints/nextRV/EV
+		fix FIXME in injectAnnotation: filter-subst existing constraints
 	figure out how to sanely report errors in flow control
 		checkBackEdge
 		mergeContexts/checkMerge

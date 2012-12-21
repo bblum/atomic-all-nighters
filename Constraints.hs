@@ -41,6 +41,7 @@ instance Show E where
 -- the numeric comparison, so it's reversed (e.g., infinity <= 0).
 data Constraint = EffectConstraint E [E] -- e = e1 + e2 + ... en
                 | RuleConstraint R R [E] -- r <= r1 + e1 + e2 + ... en
+                | InvariantConstraint R R -- r == r1; in fnptr assignment
                 deriving Eq
 
 instance Show Constraint where
@@ -48,3 +49,5 @@ instance Show Constraint where
         show e ++ "=" ++ (intercalate "+" $ map show es)
     show (RuleConstraint r r1 es) =
         show r ++ "<=" ++ show r1 ++ "+" ++ (intercalate "+" $ map show es)
+    show (InvariantConstraint r r1) =
+        show r ++ "=" ++ show r1
