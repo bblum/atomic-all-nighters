@@ -215,9 +215,21 @@ doReturn nobe =
            ((False:r1s):rs') -> modify (\s -> s { returned = (True:r1s):rs' })
            _ -> error "inconsistent returned stack"
 
+isConcrete :: SContext -> Bool
+isConcrete (RuleConst _, []) = True
+isConcrete (RuleConst _, _) = False
+isConcrete (RuleVar _, _) = False
+
+toConcrete :: SContext -> Context
+toConcrete (RuleConst (Rule g), []) = g
+toConcrete _ = error "assert fail: tried to convert symbolic context to concrete one"
+
+fromConcrete :: Context -> SContext
+fromConcrete g = (RuleConst $ Rule g, [])
+
 checkMergeContexts :: NodeInfo -> SContext -> [SContext] -> State Checker ()
 checkMergeContexts nobe g0 gs =
-    let msg = if all (null . snd) (g0:gs) then "merging flow"
+    let msg = if all isConcrete (g0:gs) then "merging flow"
               else "merging symbolic flow"
     in when (any (/= g0) gs) $
            warn nobe "merging flow" $
@@ -226,8 +238,8 @@ checkMergeContexts nobe g0 gs =
 
 mergeContexts :: NodeInfo -> SContext -> [SContext] -> State Checker SContext
 mergeContexts nobe g0 gs =
-    do let g = if all (null . snd) (g0:gs) then
-                   (minimum $ map fst $ g0:gs, [])
+    do let g = if all isConcrete (g0:gs) then
+                   fromConcrete $ minimum $ map toConcrete $ g0:gs
                else
                    g0 -- don't bother; checkmerge will warn
        checkMergeContexts nobe g0 gs
@@ -536,7 +548,7 @@ verifyCall nobe au =
                   case effect a g of
                       Just g2 -> do info nobe "changed context"
                                         [g2]
-                                    setContext (g2,[])
+                                    setContext (RuleConst $ Rule g2, [])
                       Nothing -> err nobe "illegal context effect"
                                      [M "attempted call " $ show a,
                                       M "current context" $ show g]
