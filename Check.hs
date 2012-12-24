@@ -252,7 +252,7 @@ checkBackEdge :: NodeInfo -> SContext -> SContext -> State Checker ()
 checkBackEdge nobe g0 g =
     do g <- getContext
        case (g0,g) of
-           ((g0',[]),(g',[])) ->
+           ((RuleConst (Rule g0'),[]),(RuleConst (Rule g'),[])) ->
                -- old 799 case
                when (g' < g0') $
                    warn nobe "backward jump with a more restrictive context"
@@ -347,11 +347,12 @@ restoreState oldstate =
 mergeState :: NodeInfo -> Checker -> Checker -> State Checker ()
 mergeState nobe state1 state2 =
     case (context state1, context state2) of
-        ((g1,[]),(g2,[])) ->
+        ((RuleConst (Rule g1),[]),(RuleConst (Rule g2),[])) ->
             -- old, nonsymbolic code
             do when (g1 /= g2) $
                    warn nobe "context mismatch in flow control" [g1,g2]
-               modify (\s -> s { context = (min g1 g2,[]) }) -- use subbest type
+               -- use subbest type
+               modify (\s -> s { context = fromConcrete $ min g1 g2 })
         (g1,g2) ->
             do when (g1 /= g2) $
                    warn nobe "symbolic context mismatch in flow control" [g1,g2]
@@ -625,11 +626,20 @@ checkFunDef (CFunDef specs declr oldstyle body nobe) =
           checkStat body
           -- check exit context against advertised effect
           gnew <- getContext
-          case a' of Just a ->
-                         when (effect a g /= Just gnew) $
-                             err nobe "exit context != advertised effect"
-                                 [M "entry context" g, M "exit context" gnew]
-                     Nothing -> return ()
+          case a'' of
+              Left a ->
+                  if isConcrete gnew then
+                      -- original case
+                      when (effect a (toConcrete g) /= Just (toConcrete gnew)) $
+                          err nobe "exit context != advertised effect"
+                              [M "entry context" $ toConcrete g,
+                               M "exit context" $ toConcrete gnew]
+                  else
+                      let (Annotation (_,e)) = a
+                      in addConstraint $ EffectConstraint (EffectConst e) (snd gnew)
+              Right (rv,ev) ->
+                  do when (isConcrete gnew) $ error "...???"
+                     addConstraint $ EffectConstraint (EffectVar ev) (snd gnew)
           -- check all returned contexts against each other
           endings <- ends <$> get
           case endings of
