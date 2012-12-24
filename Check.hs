@@ -584,9 +584,10 @@ injectAnnotation nobe t (Nothing) = return t
 -- Main iteration.
 --
 
-check :: CTranslUnit -> [String]
+check :: CTranslUnit -> ([String], [Constraint])
 check (CTranslUnit decls nobe) =
-    reverse $ msgs $ execState (mapM_ checkExtDecl decls) defaultChecker
+    let state = execState (mapM_ checkExtDecl decls) defaultChecker
+    in (reverse $ msgs $ state, reverse $ constraints $ state)
 
 checkExtDecl :: CExtDecl -> State Checker ()
 checkExtDecl (CDeclExt d) = checkDecl_ d

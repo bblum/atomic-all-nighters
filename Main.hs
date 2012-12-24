@@ -67,7 +67,10 @@ main =
            Right (opts, file) ->
                do ast <- parseFile opts file
                   -- print $ pretty ast
-                  let msgs = check ast
+                  let (msgs,constraints) = check ast
                   mapM_ putStrLn msgs
+                  when (not $ null constraints) $
+                      do putStrLn "I also found some constraints:"
+                         mapM_ (putStrLn . show) constraints
                   when (not $ null msgs) $ exitWith $ ExitFailure 1
 
