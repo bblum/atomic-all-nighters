@@ -46,8 +46,10 @@ data Constraint = EffectConstraint E [E] -- e = e1 + e2 + ... en
 
 instance Show Constraint where
     show (EffectConstraint e es) =
-        show e ++ "=" ++ (intercalate "+" $ map show es)
+        show e ++ " = " ++ (intercalate " + " $ map show es)
+    show (RuleConstraint r r1 []) =
+        show r ++ " <= " ++ show r1
     show (RuleConstraint r r1 es) =
-        show r ++ "<=" ++ show r1 ++ "+" ++ (intercalate "+" $ map show es)
+        show r ++ " <= " ++ show r1 ++ " + " ++ (intercalate " + " $ map show es)
     show (InvariantConstraint r r1) =
-        show r ++ "=" ++ show r1
+        show r ++ " = " ++ show r1

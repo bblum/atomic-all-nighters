@@ -33,15 +33,26 @@ int x;
 int y;
 int z;
 
+void f(struct spinlock *sp);
+void g(struct spinlock *sp);
+
 int MAY_SLEEP main() {
-	spin_lock(a);
+	f(a);
 	x++;
-	spin_lock(b);
+	f(b);
 	y++;
-	spin_unlock(*(&a));
+	g(*(&a));
 	mutex_lock(m);
-	spin_unlock(b);
+	g(b);
 	z++;
 	mutex_unlock(m);
 	// return 0;
+}
+
+void ENTER_ATOMIC_NESTED f(struct spinlock *sp) {
+	spin_lock(sp);
+}
+
+void EXIT_ATOMIC_NESTED g(struct spinlock *sp) {
+	spin_unlock(sp);
 }

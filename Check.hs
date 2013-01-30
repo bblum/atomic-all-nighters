@@ -387,6 +387,52 @@ newUnknown desc = do rv <- newRV desc; ev <- newEV desc; return (rv,ev)
 addConstraint :: Constraint -> State Checker ()
 addConstraint c = modify (\s -> s { constraints = c:(constraints s) })
 
+-- Used to replace already-added symbolic variables when an annotated symbol
+-- definition is encountered (usually functions, I guess?)
+replaceVars :: (RV,EV) -> Annotation -> State Checker ()
+replaceVars (rv,ev) (Annotation (r,e)) =
+    let -- "traverse" functions
+        replaceR r1@(RuleVar rv1)   = if rv == rv1 then RuleConst r   else r1
+        replaceR r1 = r1
+        replaceE e1@(EffectVar ev1) = if ev == ev1 then EffectConst e else e1
+        replaceE e1 = e1
+        replaceSContext :: SContext -> SContext
+        replaceSContext (r1,es) = (replaceR r1, map replaceE es)
+        replaceType :: Type -> Type
+        replaceType Base = Base
+        replaceType t@(Arrow args rt b (Right (rv1,ev1))) =
+            if rv1 == rv && ev1 == ev then
+                Arrow args rt b (Left $ Annotation (r,e))
+            else if rv1 /= rv && ev1 /= ev then t
+            else error $ "incomplete match replacing arrow" ++ show t
+        replaceType t@(Arrow _ _ _ (Left _)) = t
+        replaceType (Pointer t) = Pointer $ replaceType t
+        replaceType (Struct i' types) =
+            Struct i' $ Map.map replaceType types
+        replaceType t@(IncompleteStruct _) = t
+        replaceConstraint :: Constraint -> Constraint
+        replaceConstraint (EffectConstraint e0 es) =
+            EffectConstraint (replaceE e0) (map replaceE es)
+        replaceConstraint (RuleConstraint r0 r1 es) =
+            RuleConstraint (replaceR r0) (replaceR r1) (map replaceE es)
+        replaceConstraint (InvariantConstraint r0 r1) =
+            InvariantConstraint (replaceR r0) (replaceR r1)
+        replaceLabel :: Either [SContext] SContext -> Either [SContext] SContext
+        replaceLabel (Left gs) = Left $ map replaceSContext gs
+        replaceLabel (Right g) = Right $ replaceSContext g
+    in do -- This get is intentionally supposed to not compile if Checker changes.
+          -- Requires manual inspection for any new SContext, Type, RV, EV, etc.
+          Checker g ts ms ls bks conts brs rets es cs nrv nev <- get
+          let g' = replaceSContext g
+          let ts' = Map.map replaceType ts
+          let ls' = Map.map replaceLabel ls
+          let bks' = map (map replaceSContext) bks
+          let conts' = map (map replaceSContext) conts
+          let brs' = map (map replaceSContext) brs
+          let es' = map (map replaceSContext) es
+          let cs' = map replaceConstraint cs
+          put $ Checker g' ts' ms ls' bks' conts' brs' rets es' cs' nrv nev
+
 --
 -- Messaging
 --
@@ -572,8 +618,9 @@ injectAnnotation nobe (Arrow args ret iv (Left a0)) (Just a) =
        return $ Arrow args ret iv (Left a)
 injectAnnotation nobe (Arrow args ret iv (Right (rv,ev))) (Just a) =
     -- Was previously symbolic, now concrete. Use the concrete value always.
-    do -- TODO FIXME: Need to filter over the existing constraints and
-       -- substitute out the concrete constraint for them.
+    do -- Need to filter over the existing constraints and substitute out the
+       -- concrete constraint for them.
+       replaceVars (rv,ev) a
        return $ Arrow args ret iv (Left a)
 injectAnnotation nobe t (Just a) =
     do warn nobe "ignoring annotation on non-function" [a]
