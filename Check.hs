@@ -10,10 +10,11 @@ import qualified Data.Map as Map
 import Data.List (intercalate)
 import qualified Data.Foldable as F (any)
 import Data.Maybe (mapMaybe,catMaybes,fromMaybe,isNothing,fromJust)
-import Language.C.Data.Ident (Ident,builtinIdent)
+import Language.C.Data.Ident (Ident,builtinIdent,identToString)
 import Language.C.Data.Node (NodeInfo,fileOfNode,posOfNode)
 import Language.C.Data.Position (posRow) -- ,posColumn)
 import Language.C.Syntax.AST
+import Debug.Trace
 
 import Rules
 import Attributes
@@ -631,6 +632,7 @@ injectAnnotation nobe t (Nothing) = return t
 -- Main iteration.
 --
 
+-- TODO: For multi-file checking, we probably need to return a global vars map.
 check :: CTranslUnit -> ([String], [Constraint])
 check (CTranslUnit decls nobe) =
     let state = execState (mapM_ checkExtDecl decls) defaultChecker
@@ -650,7 +652,7 @@ checkFunDef (CFunDef specs declr oldstyle body nobe) =
                case told' of
                    Just told -> verifyAssign nobe True told t
                    Nothing -> addType nobe (VarName name) t
-        addFunc Nothing t = return ()
+        addFunc Nothing t = return () -- when does this happen?
     in do (t0',a',_) <- checkDeclSpecs nobe specs -- 'typedef' never on functions
           -- do add posible args to context.
           oldstate <- getState
@@ -662,6 +664,10 @@ checkFunDef (CFunDef specs declr oldstyle body nobe) =
           -- add function name to context
           -- this has to be done twice, for the function to be scoped inside
           -- itself and also after dropping the type mappings from inside.
+          -- XXX: When we restore state, any changes made by replaceVars in
+          -- XXX: injectAnnotation are erased, and f's type is restored to
+          -- XXX: the symbolic one. This is evidenced by the output of the
+          -- XXX: second verifyAssign from the second addFunc at the bottom. :(
           addFunc name' t
           -- traverse function body; save old context in case of nested function
           g <- case a'' of
@@ -700,7 +706,6 @@ checkFunDef (CFunDef specs declr oldstyle body nobe) =
           -- restore old context and types mapping
           restoreState oldstate
           -- second time - make this function be scoped in future functions
-          -- TODO: what about pre-declared functions
           addFunc name' t
 
 checkDecl :: Bool -> CDecl -> State Checker [(Maybe Ident, Type)]
@@ -827,12 +832,21 @@ checkAttr (attr@(CAttr name es nobe)) =
 checkAttrs :: NodeInfo -> Maybe Ident -> [CAttr]
               -> State Checker (Either Annotation Unknown)
 checkAttrs nobe name' attrs =
-    do annos <- catMaybes <$> mapM checkAttr attrs
-       case annos of
-           [] -> Right <$> (newUnknown $ filerowcol nobe) -- TODO: use name' to look up an already used unknown
-           [a] -> return $ Left a
-           a:rest -> do warn nobe "ignoring extra annotations" rest
-                        return $ Left a
+    let -- We decide either to allocate a new (RV,EV) or, if "name" is already
+        -- defined in the context, to reuse the annotation/unknown from before.
+        decideUnknown (Just name) =
+            do told' <- getType $ VarName name
+               case told' of
+                   Just (Arrow _ _ _ x) -> return x
+                   _ -> Right <$> (newUnknown $ identToString name ++ "@"
+                                                ++ filerowcol nobe)
+        decideUnknown Nothing = Right <$> (newUnknown $ filerowcol nobe)
+    in do annos <- catMaybes <$> mapM checkAttr attrs
+          case annos of
+              [] -> decideUnknown name'
+              [a] -> return $ Left a
+              a:rest -> do warn nobe "ignoring extra annotations" rest
+                           return $ Left a
 
 -- Declarators
 -- When called from fundef, need to add the args to the context. otherwise not.
@@ -842,8 +856,13 @@ checkDeclr t0 addArgs (CDeclr name' deriveds asmname attrs nobe) =
        -- strip the outermost "pointer" type derived-decl from function pointers.
        -- see also: getType
        let t = case t' of (Pointer x@(Arrow _ _ _ _)) -> x; _ -> t'
-       a' <- checkAttrs nobe name' attrs
-       t2 <- injectAnnotation nobe t (case a' of Left a -> Just a; _ -> Nothing)
+       t2 <- case t of
+                 (Arrow _ _ _ _) ->
+                     -- only check attrs for functions, to not waste RVs/EVs
+                     do a' <- checkAttrs nobe name' attrs
+                        injectAnnotation nobe t
+                            (case a' of Left a -> Just a; _ -> Nothing)
+                 _ -> return t
        return (name', t2)
 
 checkDerivedDeclrs :: Type -> Maybe Ident -> Bool -> [CDerivedDeclr]

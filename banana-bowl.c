@@ -35,12 +35,12 @@ struct mutex *m;
 
 int x;
 
-void WONT_SLEEP banana()
+void banana()
 {
 	x++;
 }
 
-void MAY_SLEEP apple()
+void apple()
 {
 	mutex_lock(m);
 	x++;
@@ -48,11 +48,11 @@ void MAY_SLEEP apple()
 }
 
 struct banana_bowl {
-	void (*f)(void) WONT_SLEEP;
+	void (*f)(void);
 };
 
 struct fruit_bowl {
-	void (*f)(void) MAY_SLEEP;
+	void (*f)(void);
 };
 
 int MAY_SLEEP main()
