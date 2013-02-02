@@ -1,4 +1,4 @@
-HSFLAGS+= -fwarn-incomplete-patterns -O2 -funbox-strict-fields -fasm -optc-O3 -XGADTs
+HSFLAGS+= -fwarn-incomplete-patterns -O2 -funbox-strict-fields -fasm -optc-O3
 HSMAKE=ghc $(HSFLAGS) --make
 
 EFILES=bin/aan

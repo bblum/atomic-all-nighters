@@ -1,5 +1,6 @@
 -- Checking the AST, with appropriate handling.
 -- Author: Ben Blum <bblum@andrew.cmu.edu>
+{-# LANGUAGE ExistentialQuantification #-}
 
 module Check where
 
@@ -10,6 +11,7 @@ import qualified Data.Map as Map
 import Data.List (intercalate)
 import qualified Data.Foldable as F (any)
 import Data.Maybe (mapMaybe,catMaybes,fromMaybe,isNothing,fromJust)
+import Data.Either (partitionEithers)
 import Language.C.Data.Ident (Ident,builtinIdent,identToString)
 import Language.C.Data.Node (NodeInfo,fileOfNode,posOfNode)
 import Language.C.Data.Position (posRow) -- ,posColumn)
@@ -390,8 +392,8 @@ addConstraint c = modify (\s -> s { constraints = c:(constraints s) })
 
 -- Used to replace already-added symbolic variables when an annotated symbol
 -- definition is encountered (usually functions, I guess?)
-replaceVars :: (RV,EV) -> Annotation -> State Checker ()
-replaceVars (rv,ev) (Annotation (r,e)) =
+replaceVars :: NodeInfo -> (RV,EV) -> Annotation -> State Checker ()
+replaceVars nobe (rv,ev) (Annotation (r,e)) =
     let -- "traverse" functions
         replaceR r1@(RuleVar rv1)   = if rv == rv1 then RuleConst r   else r1
         replaceR r1 = r1
@@ -411,13 +413,13 @@ replaceVars (rv,ev) (Annotation (r,e)) =
         replaceType (Struct i' types) =
             Struct i' $ Map.map replaceType types
         replaceType t@(IncompleteStruct _) = t
-        replaceConstraint :: Constraint -> Constraint
+        replaceConstraint :: Constraint -> Either (Maybe Constraint) Constraint
         replaceConstraint (EffectConstraint e0 es) =
-            EffectConstraint (replaceE e0) (map replaceE es)
+            cfold $ EffectConstraint (replaceE e0) (map replaceE es)
         replaceConstraint (RuleConstraint r0 r1 es) =
-            RuleConstraint (replaceR r0) (replaceR r1) (map replaceE es)
+            cfold $ RuleConstraint (replaceR r0) (replaceR r1) (map replaceE es)
         replaceConstraint (InvariantConstraint r0 r1) =
-            InvariantConstraint (replaceR r0) (replaceR r1)
+            cfold $ InvariantConstraint (replaceR r0) (replaceR r1)
         replaceLabel :: Either [SContext] SContext -> Either [SContext] SContext
         replaceLabel (Left gs) = Left $ map replaceSContext gs
         replaceLabel (Right g) = Right $ replaceSContext g
@@ -431,8 +433,14 @@ replaceVars (rv,ev) (Annotation (r,e)) =
           let conts' = map (map replaceSContext) conts
           let brs' = map (map replaceSContext) brs
           let es' = map (map replaceSContext) es
-          let cs' = map replaceConstraint cs
-          put $ Checker g' ts' ms ls' bks' conts' brs' rets es' cs' nrv nev
+          -- In processing the constraints, some of them could fail! We need to
+          -- output the appropriate message if so.
+          let (cs',faileds) = partitionEithers $ map replaceConstraint cs
+          let cs'' = catMaybes cs'
+          mapM_ (\x -> err nobe "Impossible constraint"
+                           [M "when replacing constraint vars" $ show (rv,ev),
+                            M "with concrete annotation" $ show (r,e)]) faileds
+          put $ Checker g' ts' ms ls' bks' conts' brs' rets es' cs'' nrv nev
 
 --
 -- Messaging
@@ -621,7 +629,7 @@ injectAnnotation nobe (Arrow args ret iv (Right (rv,ev))) (Just a) =
     -- Was previously symbolic, now concrete. Use the concrete value always.
     do -- Need to filter over the existing constraints and substitute out the
        -- concrete constraint for them.
-       replaceVars (rv,ev) a
+       replaceVars nobe (rv,ev) a
        return $ Arrow args ret iv (Left a)
 injectAnnotation nobe t (Just a) =
     do warn nobe "ignoring annotation on non-function" [a]
@@ -664,10 +672,6 @@ checkFunDef (CFunDef specs declr oldstyle body nobe) =
           -- add function name to context
           -- this has to be done twice, for the function to be scoped inside
           -- itself and also after dropping the type mappings from inside.
-          -- XXX: When we restore state, any changes made by replaceVars in
-          -- XXX: injectAnnotation are erased, and f's type is restored to
-          -- XXX: the symbolic one. This is evidenced by the output of the
-          -- XXX: second verifyAssign from the second addFunc at the bottom. :(
           addFunc name' t
           -- traverse function body; save old context in case of nested function
           g <- case a'' of
@@ -706,6 +710,10 @@ checkFunDef (CFunDef specs declr oldstyle body nobe) =
           -- restore old context and types mapping
           restoreState oldstate
           -- second time - make this function be scoped in future functions
+          -- The annotation needs to be injected again because the previous
+          -- inject's replacevars occurred under the temporary state, and needs
+          -- to be made permanent.
+          t <- injectAnnotation nobe t0 a'
           addFunc name' t
 
 checkDecl :: Bool -> CDecl -> State Checker [(Maybe Ident, Type)]

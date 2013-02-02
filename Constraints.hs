@@ -53,3 +53,11 @@ instance Show Constraint where
         show r ++ " <= " ++ show r1 ++ " + " ++ (intercalate " + " $ map show es)
     show (InvariantConstraint r r1) =
         show r ++ " = " ++ show r1
+
+--
+-- Constaint processing.
+--
+
+-- Constant folding.
+cfold :: Constraint -> Either (Maybe Constraint) (Constraint)
+cfold x = Left $ Just x
