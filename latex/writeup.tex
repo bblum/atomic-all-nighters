@@ -1,0 +1,941 @@
+\documentclass{article}
+\usepackage{amsmath,amsthm,amssymb,fullpage,yfonts,graphicx,proof,subfig,wrapfig,appendix,hyperref,mdwlist,wasysym}
+\usepackage{upgreek}
+\usepackage{epsfig}
+\usepackage[bottom]{footmisc}
+
+\begin{document}
+\captionsetup{width=.75\textwidth,font=small,labelfont=bf}
+\title{\bf Atomic All-Nighters: \\ Static Context Checking in Kernel Codebases}
+\author{Benjamin Blum (\textbf{bblum})}
+\maketitle
+
+\newcommand\true{\;\textit{true}}
+\newcommand\false{\;\textit{false}}
+
+\newcommand\alpher\alpha
+\newcommand\beter\beta
+\newcommand\gammer\gamma
+\newcommand\delter\delta
+\newcommand\zeter\zeta
+\newcommand\Sigmer\Sigma
+
+\newcommand\NN{\mathbb{N}}
+\newcommand\QQ{\mathbb{Q}}
+\newcommand\RR{\mathbb{R}}
+\newcommand\ZZ{\mathbb{Z}}
+
+\newcommand\Infinity{ {\sf Infinity}}
+\newcommand{\Nested}[1]{ {\sf Nested}~ #1}
+\newcommand{\IncDec}[1]{ {\sf IncDec}~ #1}
+\newcommand\Enable{ {\sf Enable}}
+\newcommand\Disable{ {\sf Disable}}
+\newcommand\inc{ {\sf inc}}
+\newcommand\dec{ {\sf dec}}
+
+\begin{abstract}
+When writing kernel code, developers frequently have to worry about certain actions that they might not be allowed to perform based on what ``context'' their code runs in.
+For example, Linux has many types of critical sections which may not invoke the scheduler, such as when using spin-locks or RCU and handling device interrupts.
+This notion of context is not indicated in the code itself, and is only lighted upon in comments, documentation, and mailing list discussions.
+We propose a framework which will enable developers to explicitly communicate the contexts in which code runs in, and to define statically-checkable rules about what actions are or are not allowed with respect to the context.
+\end{abstract}
+
+\section{Introduction}
+
+%Kernel codebases frequently have hidden requirements about what kind of actions certain functions and regions of code are and are not allowed to perform.
+Linux has many synchronisation primitives which may cause changes in the context of the calling code or which may cause actions that are only allowable in certain contexts.
+For example, to take a spinlock disables preemption, and the code must complete the protected operation ``quickly'' (since a contending thread may be spin-waiting on another CPU).
+%Handling device interrupts has similar restrictions: the device expects the interrupted processor to service the request promptly.
+In such ``atomic context'' situations, it is prohibited to use functions that may block the calling thread and/or invoke the scheduler, since it may leave preemption disabled or contending threads spinning for arbitrarily long.
+Many operations do imply scheduler action, though: Linux's memory allocator and mutexes will all block during contention.
+Kernel developers must not only worry about calling such functions from atomic context, but also about indirectly causing them to be called, which can be difficult to discern.
+
+Such ``atomic-sleep'' errors can cause many different types of failures, of varying degrees of debugging difficulty.
+One possible failure mode is deadlock: if thread A holds a spin-lock, attempts to take a mutex, and reschedules, thread B may eventually run on the same processor and attempt to take the same spin-lock.
+This will cause the processor to spin-wait forever, assuming that the lock must be held by somebody currently running on a different core, while in reality thread B is preventing thread A from running again.
+Other possible failure modes are more subtle. If preemption is disabled and a reschedule occurs, the preemption disabling can be ``leaked'', and other sections of code might unexpectedly run non-preemptibly.
+
+We propose a system that enables developers to explicitly communicate the conditions surrounding this issue of code context. The system consists of:
+
+\begin{itemize}
+	\item
+		A syntax for annotating kernel code to indicate rules about the code's context.
+		Through use of the C preprocessor, the annotations may be written within the C code itself, yet not change the code's semantics.
+	\item 
+		A way to define, for the whole codebase, the generalised set of states and interactions that characterise code context.
+	\item
+		A static analysis tool which runs on an annotated (or partially-annotated) codebase and detailedly reports errors about code that violates context invariants.
+\end{itemize}
+
+We demonstrate our checker by annotating the codebases of several Pebbles kernels submitted by 15-410 students, and show by example that such a tool could prevent misguided developers from committing grievous concurrency errors.
+We also evaluate the checker by introducing it to several 15-410 TAs and ex-TAs, and measuring how long it takes for them both to learn the rules and to annotate student kernels and either find bugs in them or verify the absence of bugs.
+
+% The rest of this paper is organised as follows.
+
+Section 2 of this paper discusses the related work in static analysis and type theory.
+Section 3 describes the theoretical foundation of our tool, which makes explicit the rules about atomic-sleep bugs.
+Section 4 describes the inherent limitations of static analysis, and how our tool provides useful guarantees in the face of them.
+Section 5 describes implementation details of our tool, including known bugs.
+Section 6 describes our evaluation, with a description of strange coding idioms we encountered, and a suitability analysis for application to both 15-410 and to Linux.
+Section 7 describes possible directions for future work, including a set of recommendations for distributing to 15-410 students.
+Section 8 concludes; section 9 is acknowledgements; section 10 is references.
+
+Appendix A contains several example test cases which demonstrate intricacies of the type theory.
+Appendix B contains a walk-through of the checking algorithm on subtly-incorrect sample code.
+Appendix C contains a listing of error and warning messages that the tool outputs, with detailed descriptions of their meanings.
+Appendix D contains a formalisation of the Atomic All-Nighters type system in the simply-typed lambda calculus, and a statement of preservation that, if proven, would guarantee that any program that our type system verifies does not contain an atomic-sleep bug.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\section{Related Work}
+
+There has been much past work on static analysis for verification of concurrent programming idioms. Only some of them are as type-oriented as this approach. Also, because of how specific the context-based sleeping function call problem here addressed is (as it only manifests in complicated kernel environments), very few related works even state the precise nature of the problem.
+
+The uniqueness of this work is in its fusion of static analysis on large existing codebases, a typestate-like approach to analyzing the context of the code, and a formal type theory that captures allowed and disallowed behaviours. To the best of our knowledge, no other work has addressed this specific kernel-level problem in such a comprehensive way.
+
+The main contribution of this paper is not necessarily the tool for performing the check, but rather the formal rule system for making explicit what behaviours are and are not allowed in a code base with regard to the ``sleeping in atomic context'' problem. Our rules could feasibly be implemented in many of the frameworks presented by previous work.
+
+\subsection{Static Analysis}
+
+Engler et al.'s work on meta-level compilation [1] [2] defines the basic approach that we take in our work. Our tool is essentially a meta-level compilation pass, which performs a check before the main compilation of the codebase. The meta-level compilation paper also describes the bug that we are solving, referred to as ``blocking deadlock'', but the system of rules they defined for checking for it are not sophisticated enough to catch all such bugs (indeed, they admit their tool fails on functions that are called with interrupts off, then re-enable them and then invoke the scheduler), and it also does not address the problem of function pointers, as our work does.
+
+Johnson and Wagner [3] previously applied a type-checking approach to kernel-level safety validation. Their work focussed on finding user/kernel pointer bugs, which constitute security/exploitability problems, in contrast with the atomic-sleeping that we focus on, which is a concurrency correctness issue. Nevertheless, they show that static type-oriented approaches can indeed be effective for checking kernel code.
+
+The RacerX project [4] statically analyses large codebases to look for race conditions (data races and deadlocks) that result from bad locking orders. It is similar (but not as type-oriented) in approach to our project, but solves a different type of concurrency problem. It also presents several ideas for interprocedural analysis and constraint inference that would be applicable to extend our project.
+
+Saturn, by Xie and Aiken [5], is a system for detecting errors using boolean satisfiability. It introduces the concept of a per-function ``summary'' that enables it to do interprocedural analysis, much like the function annotations used in our project. It identifies only a very narrow range of concurrency problems, though: only misuse of individual locks.
+
+CQual [6] is a system for adding type qualifiers to C code, just like how the annotations in our project serve to qualify the type of functions. CQual could well be used as the framework for rules that check for the atomic-sleep problem as explored here. Further work on CQual has shown further applications to kernel-level problems; flow-sensitive type qualifiers [7] can address problems with spinlock locking patterns, and flow-insensitive type qualifiers [8] can be used for dataflow tracking such as awareness of ``taint'' in user-controlled data.
+
+SLAM [9] [10] is another static analysis project that focusses on verifying ``API usage rules'', without requiring in-code annotations (an advantage over our tool). Their research does not address the atomic-sleep problem, but the tool could perhaps be used to check for it. Slic [11] is a language for interface/API checking of C which has also been demonstrated to check for correct locking patterns, and could feasibly be used for our problem as well.
+
+Other static analysis projects have taken different approaches to finding locking problems in Linux. Breuer and Valls [12] focussed on spinlock-specific locking errors in Linux. Breuer et al. [13] find deadlock and double-free errors using model checking and abstract interpretation. The Locksmith project [14] finds errors that have to do with the data that is being protected by locks. All of these are similar approaches to slightly different problems as here.
+
+\subsection{Type Theory}
+
+Our work heavily borrows ideas from several well-established type theoretic concepts. Castagna [15] described the main principles of covariance and contravariance in subtyping that we use when checking function pointers. More recently, Pierce [16] gave a comprehensive theory of subtyping, including rules for argument contravariance, reference invariance, and intersection and union types, all of which are relevant in our work.
+
+Bierhoff and Aldrich [17] introduced the concept of typestate, a method for expressing transitions in objects' state throughout code flow, which is essentially the same idea as the ``context'' of kernel context (and whether the scheduler can be invoked is analogous to whether certain operations can be performed on objects in certain states). Beckman et al. [18] further extended this concept to apply to ``atomic blocks'' in transactional memory systems, showing that this theory is indeed applicable to concurrent systems.
+
+Our work hopes to show that these abstract theoretic concepts are indeed applicable in such a theory-weak area as kernel development.
+
+\subsection{Other Approaches}
+
+Much work has been done in the direction of extending C itself to prevent illegal code from even being valid. Cyclone, a safe dialect of C [19], if applied to our situation, would have the weakness of needing to rewrite the entire codebase. CCured [20] is an effort to retro-fit legacy code to be type-safe, and is inherently more powerful, but comes with significant runtime overhead. Static analysis avoids both of these penalties.
+
+There are dynamic concurrency checkers, such as MaceMC [21] and CHESS [22] that take a runtime-oriented approach to finding such bugs. These programs inherently rely on specific interleavings being exposed during the test case in order to find the bug; for example, an attempt to acquire a sleeping mutex while holding a spinlock would be immediately caught by our tool, but for a dynamic checker to find it, it would need to be using a test case which caused contention on the mutex. Furthermore, bugs like these can be found at runtime more easily by a few choice assert statements in the kernel codebase. When it comes to programming idioms such as these, static tools are much more appropriate.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\section{Theory}
+
+\begin{eqnarray*}
+	\mathsf{context} & ::= & \mathsf{Nested}~ N ~|~ \mathsf{Infinity} \\
+	\mathsf{rule} & ::= & \mathsf{context} \\
+	\mathsf{effect} & ::= & \mathsf{IncDec}~ X ~|~ \mathsf{Enable} ~|~ \mathsf{Disable} \\
+	\mathsf{annotation} & ::= & (\mathsf{rule},\mathsf{effect}) \\
+\end{eqnarray*}
+
+\subsection{Context}
+
+The ``Context'' represents the implicit state of preemption (managed via interrupts or some other mechanism) at a given point in the code.
+
+We represent context with a natural number instead of with a boolean because certain preemption-disabling actions need to be done in sequence, so that preemption should be re-enabled only when all of them are undone.
+Multiprocessor spinlocks are a frequent use-case of this: when holding two spinlocks, it is not permissible to drop only one of them and then lock a descheduling mutex; hence, it is inaccurate to say that \texttt{spin\_unlock} necessarily transitions into a preemption-enabled state.
+Kernels such as Linux tend to resolve this with a global (per-cpu) counter that represents the ``preemption nesting depth''.
+The counter is incremented whenever entering a region that requires preemption to be disabled (such as \texttt{spin\_lock}), and decremented when exiting; if the counter hits zero, then preemption is actually re-enabled.
+
+The additional context value {\sf Infinity}, while not practically attained during any program execution, is required for checking functions that are required not to sleep. It represents that the function may be called with (for example) an arbitrary number of spinlocks held.
+
+\subsection{Rules}
+
+Each function and function pointer is to be annotated with a ``Rule''. The rule represents the ``most restrictive context'' that the function is allowed to be called in. On the level of the verification we are performing, a function's rule is its type.
+
+We define a total ordering on contexts/rules to express ``restrictiveness'', which serves as a subtyping relation. {\sf Infinity} is at least as restrictive as any other context, and {\sf Nested $X$} is at least as restrictive as {\sf Nested $Y$} iff $X \le Y$. Intuitively, preemption being enabled ({\sf Nested $0$}) is the least restrictive context.
+
+When checking function call-sites, we compare a function's rule against the context of the code in which it is being called. To call a function with rule $C_1$ from code with context $C_2$ is legal iff $C_1 \le C_2$; i.e., $C_1$ is a subtype (at least as restrictive) as $C_2$.
+
+When checking function pointer assignments, we compare the rule of what's being assigned to the pointer's annotated rule. It is legal to assign a function or function pointer with the rule $C_1$ to a function pointer with rule $C_2$ iff $C_1 \le C_2$, except:
+
+\begin{itemize}
+	\item If any of the arguments of the function type in question are themselves function pointers, we must check the types of the argument function pointers as well.
+		To express such function pointers as having checkable ``types'' in our system, we denote its type as $\tau = \tau' \rightarrow C$, where $\tau'$ is the type of its function pointer argument. (This extends easily to additional function pointer arguments.)
+		
+		Because argument types are contravariant instead of covariant in subtyped assignment [15] [16], we define $\tau_1$ (as $\tau'_1 \rightarrow C_1$) to be a subtype of $\tau_2$ (as $\tau'_2 \rightarrow C_2$) if $C_1 \le C_2$ and $\tau'_2 \le \tau'_1$.
+
+		The test cases \texttt{contravariant.c} and \texttt{covariant.c} in the appendix demonstrate the need for this.
+	\item If a function pointer storage location is memory whose address is computed and passed around (such as inside of a struct that is passed by reference), assignment must be invariant rather than covariant [16], meaning the types must be exactly equal rather than one a subtype of the other.
+
+		The test case \texttt{banana-bowl.c} in the appendix demonstrates the need for this.
+	\item In the case of a ternary operator that returns a function pointer in each branch, the types for the function pointers must be merged, or ``disjoined''. Type disjunction ($\vee$) is defined as follows:
+		\begin{eqnarray*}
+			C_1 \vee C_2 & ::= & \mathsf{if}~C_1\le C_2~\mathsf{then}~C_2~\mathsf{else}~C_1 \\
+			C_1 \wedge C_2 & ::= & \mathsf{if}~C_1\le C_2~\mathsf{then}~C_1~\mathsf{else}~C_2 \\
+			(\tau_1 \rightarrow C_1) \vee (\tau_2 \rightarrow C_2) & ::= & (\tau_1 \wedge \tau_2) \rightarrow (C_1 \vee C_2) \\
+			(\tau_1 \rightarrow C_1) \wedge (\tau_2 \rightarrow C_2) & ::= & (\tau_1 \vee \tau_2) \rightarrow (C_1 \wedge C_2) \\
+		\end{eqnarray*}
+		The contravariant switching in the third rule is only sound if the subtyping relation gives a total ordering on types, which is not true in most systems, but is in ours.
+		\footnote{We could find no work which proves this. The proof is left to future work.}
+
+		The test cases \texttt{union.c}, \texttt{onion-station.c}, and \texttt{onion-grill.c} in the appendix demonstrate the need for this.
+\end{itemize}
+
+\subsection{Effects}
+
+Each function and function pointer is also to be annotated with an ``Effect''.
+
+{\sf IncDec $X$} means to modify the preempt nesting depth by $X$ (with no effect on {\sf Infinity}). {\sf Enable} means to set the preempt counter to zero no matter its value (even {\sf Infinity}). {\sf Disable} means to set the preempt counter to {\sf Infinity} no matter its value.
+
+It is legal to assign a function or function pointer to a function pointer if and only if their effects are identical.
+
+\subsection{Annotations}
+
+An annotationis a pair of a rule and an effect. In our implementation, annotations are specified using the \texttt{\_\_attribute\_\_} keyword. We define (as preprocessor macros) aliases for several commonly-used annotations.
+
+\begin{itemize}
+	\item \texttt{MAY\_SLEEP}:
+        The function might invoke the scheduler, or it might not. It has no
+        effect on the context ("{\sf Nested} $0$, {\sf IncDec} $0$").  Example: \texttt{mutex\_lock}
+	\item \texttt{WONT\_SLEEP}:
+        The function is guaranteed not to, and is safe to call from atomic
+        context. It has no effect. ("{\sf Infinity}, {\sf IncDec} $0$") Example: \texttt{set\_esp0}
+	\item \texttt{EXIT\_AND\_SLEEP}:
+        The function starts with preemption disabled once, and must enable it
+        once (and is allowed to sleep after that). ("{\sf Nested} $1$, {\sf IncDec} $-1$")
+        Example: \texttt{page\_fault\_handler}
+	\item \texttt{ENTER\_ATOMIC}:
+        The function disables preemption, without regard for nesting.
+        ("{\sf Infinity}, {\sf Disable}") Example: \texttt{disable\_interrupts}
+	\item \texttt{EXIT\_ATOMIC}:
+        The function enables preemption, without regard for nesting.
+        ("{\sf Infinity}, {\sf Enable}") Example: \texttt{enable\_interrupts}
+	\item \texttt{ENTER\_ATOMIC\_NESTED}:
+        The function effects another level of preemption disabling. ("{\sf Infinity},
+        {\sf IncDec} $1$") Example: \texttt{spin\_lock}
+	\item \texttt{EXIT\_ATOMIC\_NESTED}:
+        The function reverts a level of preemption disabling. ("{\sf Infinity}, {\sf IncDec}
+        $-1$") Example: \texttt{spin\_unlock}
+
+\end{itemize}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\section{Limitations}
+
+\subsection{Flow Control}
+
+As every analysis has to make some sacrifices to make way for the fact that all nontrivial properties of programs are undecidable, so too does ours, especially given that our analysis performs no abstract interpretation.
+
+\subsubsection{Conditional Branches}
+
+When outgoing flow edges from blocks in the control graph merge together into one new block, each one will have its own, possibly different, code context. We will simply take the ``most restrictive'' context from among those, to begin checking the new block.
+\footnote{We choose this solution to be most useful in terms of the user's ability to understand and pass judgement about the false positives/negatives that result.}
+
+Consider the following code, which is a common idiom in kernel programming:
+
+\begin{verbatim}
+if (x != NULL)
+    spin_lock(&x->lock);
+do_more_stuff();
+if (x != NULL)
+    spin_unlock(&x->lock);
+\end{verbatim}
+
+Our tool has no way of knowing that the two conditional branches will be executed codependently.
+\footnote{Even to compare the conditions would not be sufficient, since they could easily be more complicated.}
+Even though it is obvious to the programmer that this code, taken as a whole, would have no effect (increment or decrement) on the context, our tool will infer that the first branch could be taken while the second one not, and think that the code as a whole increments the context, and will emit an error (e.g. if the containing function is annotated as having no change).
+\footnote{This semester I graded a student kernel whose \texttt{mutex\_unlock} function ``sometimes'' rescheduled to waiting threads, but also frequently was called with the scheduler locked. Its implementation was smart enough to never try to reschedule when the scheduler was locked, so our tool would produce a false positive on this function. A right course of action would be to mark \texttt{mutex\_unlock} as \texttt{WONT\_SLEEP}, and manually verify its behaviour.}
+
+Our chosen approach should produce no false negatives.
+
+Fortunately, errors are per-function; if the user sees an error such as this and can manually verify that it is a false positive (and to annotate the containing function the way it actually should be), then they can trust our checker's results on the rest of their codebase.
+
+\subsubsection{Loops}
+
+Another problem with the flow merging approach we choose is that of backwards edges in the control graph. Consider the following code, another common idiom in kernel programming:
+
+\begin{verbatim}
+for_each_task(t in some_task_list) {
+    spin_lock(&t->lock);
+}
+do_more_stuff();
+for_each_task(t in some_task_list) {
+    spin_unlock(&t->lock);
+}
+\end{verbatim}
+
+Indeed, to attempt to propagate and merge contexts along the backwards edge would not converge (without considering the loop condition, that is - but that's frequently undecidable itself); we would simply think the code was trying to take infinitely many spinlocks in the first loop.
+
+Instead, we simply assume that the body of every loop will run once. This should produce the desired behaviour in most cases where loop bodies affect code context.
+\footnote{A better approach might be to assume that every loop body runs {\em twice}, to explicitly catch cases such as \texttt{for (...) \{ mutex\_lock(x); spin\_lock(y); \}}. This is not implemented, but is no challenge.}
+If the context at the end of the loop is more restrictive than it was at the beginning, we emit a warning that asks the user to manually inspect and verify. (The same is done for backwards \texttt{goto}s.)
+
+\subsection{Annotation Gaps}
+
+We recognise that it may be impractical to ask developers to annotate every single function and function pointer type in their codebase.
+Our tool will seek to provide useful guarantees even in the face of missing annotations.
+
+There are multiple possible behaviour schemes for dealing with missing annotations, each with their own pros and cons. These could be easily configurable with a command-line option flag (though this is not implemented; our tool currently always does the ``assume the worst'' approach).
+
+In either case, when an annotation is missing either at the start of a function being checked, or at any call-site, or at any function pointer assignment, our tool emits a {\em ``missing annotation''} warning.
+
+\subsubsection{``Assume the Best''}
+
+If an annotation on some function or function pointer type is missing, ``assuming the best'' will help avoid inundating the user in false positive errors when checking an only-partially-annotated codebase.
+
+When checking the body of an unannotated function, we would assume it is always called from the least restrictive context (i.e., assume that it is \texttt{MAY\_SLEEP}, that nobody else requires it to be \texttt{WONT\_SLEEP}).
+
+With either configuration, if no warnings are printed for a given function, the user may not necessarily assume that function is safe; they may only assume that if no warnings are printed for the entire codebase.
+If we combined our tool with a call graph analyser (that included edges for all function pointer assignments), it would be possible to guarantee that a subgraph of the call graph that had no outgoing edges would be safe if it had no warnings on it - but this is left to future work.
+
+\subsubsection{``Assume the Worst''}
+
+If an annotation on some function or function pointer type is missing, ``assuming the worst'' will help the user fill in the last gaps in a codebase while being conscious of every annotation-caused error that remains to be fixed.
+
+When checking the body of an unannotated function, we would assume it is always called from the most restrictive context (i.e., assume that it is \texttt{WONT\_SLEEP}). If the function shows no errors, then would be okay to leave it as \texttt{WONT\_SLEEP}.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\section{Implementation Detail}
+
+We expect the user of this tool to annotate functions and function pointers throughout the codebase. Appendix B contains sample code and an explanation of how a pass over it is performed.
+
+We have implemented our checker, called AAN, in Haskell, using the \texttt{Language.C} library, which includes facilities for parsing C into an AST datatype.
+
+So as to coexist in the code-base with a normal compilation pass, the annotations are be implemented with the \texttt{\_\_attribute\_\_} keyword, and may be toggled with a preprocessor macro. Sample code that demonstrates this is found in appendix A.
+
+When doing a pass, our tool will enable the macro, and slurp the rule and the effect out of the attribute declaration. When actually compiling the code, the macro will stay disabled.
+
+A guide to interpreting the warnings emitted by AAN is included as appendix C.
+
+\subsection{Bugs}
+
+AAN is known to have the following bugs at present.
+
+\begin{itemize}
+	\item We currently assume the body of each loop will run exactly once.
+		A loop body that goes ``\texttt{mutex\_lock(); spin\_lock();}'', and possibly goes around again, is clearly wrong, but will not be caught.
+		The fix for this is trivial, but not yet implemented.
+	\item Fall-through case statements are not supported. ``\texttt{case 1: spin\_lock(); case 2: mutex\_lock(); spin\_lock(); break;}'' will foil AAN.
+	\item Unnamed arguments in function forward-declarations are not supported. AAN understands ``\texttt{void foo(int x);}'', but not ``\texttt{void foo(int);}''.
+	\item The info/warn/error verbosity system is very primitive.
+\end{itemize}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\section{Evaluation}
+
+To evaluate our framework, we measured three things:
+how long it takes for a new user to come up to speed on the rules for using the tool,
+how long it takes for a user to fully annotate the codebase for a kernel,
+and how long it takes for a user to interpret AAN's output to determine which messages were false positives and which represented real bugs, i.e., to verify the presence or absence of atomic-sleep bugs in a codebase.
+We also took note of ``strange coding idioms'' that we encountered during evaluation that would require either major code refactoring or extending AAN's functionality.
+
+We kept two use cases in mind during our evaluation: suitability for giving to 15-410 students during Project 3 (use by novice developers on small code-bases), and suitability for finding atomic-sleep bugs in Linux (use by a single expert developer on a large code-base).
+
+\subsection{Time}
+
+The two 15-410 TAs who tested AAN took 15 minutes and 30 minutes to get up to speed on the rules, not having seen the project before. For 15-410 students (who have much less intuition for kernel programming than the TAs), we expect it would take two to three times as long.
+
+Annotating all the header files for each kernel took between 45 and 60 minutes. Annotating, checking, and interpreting results for each entire code-base took between 2.5 hours and 4 hours. At the end of the effort, the TAs were left with no warning messages which they did not understand.
+\footnote{That is, after some guidance from the author, which will be included in the user's manual in future releases.}
+
+A more rigorous evaluation would have obtained the following additional statistics, which we did not have time to do.
+\begin{itemize}
+	\item How long does it take students to use, as compared to TAs? (A semester-long experiment would be to distribute AAN in 15-410 and measure the overall increase in TA-assigned concurrency scores.)
+	\item As a control group, how long would it take a TA to find atomic-sleep bugs in student kernels by manual inspection, instead of with AAN? (A first-order approximation is how long it takes to grade a kernel - between 6 and 10 hours - but this is influenced by the expense of looking for unrelated bugs at the same time.)
+\end{itemize}
+
+\subsection{Strange Coding Idioms}
+
+While testing AAN, we found certain coding idioms which result in code more complicated than our type system can reason about. In some cases, there are extensions we could provide to our checker to support them; in other cases, it is better to ask that the user either refactor the code to be simpler or to manually verify each occurrence.
+
+\subsubsection{Interrupt Handling}
+
+\begin{enumerate}
+	\item
+		We found that to annotate interrupt handlers as \texttt{EXIT\_AND\_SLEEP} is not appropriate in all cases, because in addition to them using \texttt{outb} to re-enable the same interrupt, the handler may also use true interrupt enabling/disabling (not the nested version) to manipulate other interrupts. Possible solutions:
+		\begin{itemize}
+			\item Add a second ``level'' of \Infinity, less restrictive than the current one, to represent when interrupts are off by the PIC's choice.
+				This would adequately capture the behaviour, and would be suitable for use on commercial kernels such as Linux, but would be too confusing to teach to 15-410 students.
+			\item Explain in the user's manual that this behaviour may sometimes cause false positives. This is recommended for 15-410 use.
+		\end{itemize}
+	\item
+		We found that there wasn't an adequate way to express that interrupt handlers must never contend on locks (that the interrupted thread might hold, causing deadlock), but may still invoke the scheduler for simple rescheduling operations.
+		This shows that while lock-contending and rescheduling are both sometimes-illegal sleeping operations, the former is illegal in more places than in the latter, though our explicit rule system does not represent this.
+		Possible solutions:
+		\begin{itemize}
+			\item Explain in the user's manual that they should make a sacrifice one way or another when annotating, and possibly get one false positive or another. This choice would be adequate for distributing the tool as-is.
+			\item The annotation system should be extended to capture the difference between these two types of ``sleeping''. This choice would more accurately represent the implicit rule, and would probably also be more educational to distribute to 15-410 students.
+		\end{itemize}
+	\item
+		We found that our rules for interrupt-disabling schemes that use \texttt{ENTER\_ATOMIC} and \texttt{EXIT\_ATOMIC} (instead of the nested-counting scheme) were inadequate. For example, a function that disables then enables interrupts will cause interrupts to be re-enabled in any case when it returns, but to mark it \texttt{EXIT\_ATOMIC} would not allow for it to sleep before disabling interrupts, which might be legitimate.
+
+		It would be useful to extend the rules for the non-nesting scheme to represent the pre-conditions of such functions: such a function that is sometimes called with interrupts off should be \texttt{EXIT\_ATOMIC}, but if it is always called with interrupts on, it would be legal to sleep beforehand, which wants the rule ``\Nested{0},\Enable''.
+
+		It might also be useful to separate entirely the non-nesting rule-set from the nesting rule-set, since a codebase that mixes them is most likely wrong.
+\end{enumerate}
+
+\subsubsection{kmalloc}
+
+One widespread pattern is functions which might sleep dependently on the value of their arguments.
+Most prevalent is Linux's \texttt{kmalloc()} function, which might sleep if its flag argument is \texttt{GFP\_KERNEL} (what it is most commonly called with), but is guaranteed not to sleep if called with \texttt{GFP\_ATOMIC} (as e.g. in interrupt handlers).
+
+To deal with functions like this, our tool would need to support annotations that indicate different behaviours based on the values of the arguments.
+Fortunately, this can remain as a static analysis, because such arguments are almost always compile-time constant values.
+
+\subsubsection{Discarding Types}
+
+One common but unfortunate idiom in C programming is to cast away type information. While we check type-casts in the same way we check function pointer assignments, it is very common to cast data to and from the \texttt{void *} type, which could allow bad code to sneak past our tool. We want to avoid emitting a type mismatch warning on every \texttt{void *} cast, but not miss relevant cases. We check the type structure to see if it contains an annotation within it, and if so, emit a warning and ask the user to manually verify its safety.
+
+A specific subcase of this idiom is the use of the \texttt{memcpy} function to move struct bodies around. If a struct contains a function pointer, this could easily break annotation safety. A hackish solution would be to match the \texttt{memcpy} function specifically, and treat it as an assignment between its two arguments. This is left to future work.
+
+One possible extension, which we do not yet implement, is a \texttt{MAGIC} macro which could be used to express the user's certainty that a particular pointer is safe to cast to and from, and that the tool should not emit warnings about it.
+
+\subsection{Analysis for 15-410}
+
+Even with a two- or four-fold increase, as compared to the TAs' time, in the amount of time a student would take to use AAN, it is still very short compared to the total amount of time students spend on the kernel project in total.
+
+We believe that encouraging students to use the tool will, in addition to helping them debug, help clarify their thought processes and their understanding of kernel programming, and would hence be useful to integrate into 15-410.
+
+The most important characteristic of a tool suitable for use in 15-410 is ease of use, in terms of interface design and in terms of understanding false positives. We discuss this in the future work section.
+
+\subsection{Scalability Analysis}
+
+The code in header files for each of the student kernels used for testing purposes measured 1084, 1748, 1831, and 2273 lines, as measured by \texttt{wc -l}.
+For comparison, the \texttt{include} directory for Linux measures almost 500,000 lines with \texttt{wc -l}.
+Approximating that the average student kernel header-set (1734 lines) takes 45 minutes to annotate, we can estimate the effort to annotate Linux's headers as 13,000 minutes, or 216 hours.
+
+The following table shows estimates for time to annotate, check, and interpret AAN's output for various codebases.
+\footnote{The \texttt{kernel/} directory of Linux is arguably the most important place to ensure there are no bugs. The \texttt{drivers/} directory is where bugs are most likely to be found.}
+
+\begin{figure}[h]
+\begin{tabular}{l|c|c|c}
+	Codebase & Lines of code & Estimated time to process (minutes) & (hours) \\
+	\hline
+	Average student headers & 1734 & 45 & 0.75 \\
+	Linux headers & 499818 & 12971 & 216 \\
+	Average student code & 6654 & 180 & 3 \\
+	Linux - \texttt{kernel/} only & 183291 & 4958 & 82 \\
+	Linux - \texttt{drivers/} only & 1934352 & 52327 & 872 \\
+\end{tabular}
+\end{figure}
+
+It is clear that annotation inference is necessary before using AAN on commercial kernels is feasible.
+
+\subsection{Bugs Found}
+
+AAN correctly found many bugs in the sample student kernels that we evaluated. Some of the kernels were hand-picked for being known to have atomic-sleep bugs; some of them were chosen semi-randomly.
+
+Apart from the expected straightforward atomic-sleep pattern, there were three particularly interesting bugs:
+
+\begin{itemize}
+	\item In one kernel, the \texttt{deschedule} implementation disabled interrupts, invoked a \texttt{VALIDATE\_ARGS} macro to check safety of user memory, then performed the rest of the system call, which re-enabled interrupts at the end. But \texttt{VALIDATE\_ARGS} expanded to flow control which would return from the function in the error case, which failed to re-enable interrupts. AAN emitted the error message {\em ``not all exit contexts match each other''}. We did not find this bug with the naked eye.
+	\item In the same kernel, the \texttt{swexn} implementation had an explicitly-written failure return case that similarly failed to re-enable interrupts.
+	\item In a kernel that was not already known to have the atomic-sleep problem, AAN found a bug where the keyboard handler acknowledged the current interrupt twice. This would cause problems with any lower-priority interrupt handler (such as for device drivers), where a keyboard interrupt that preempted a device interrupt would acknowledge both interrupts at the same time, causing the device interrupt to be able to unexpectedly reenter itself. AAN emitted the error message {\em ``exit context != advertised effect''}. We had already found this bug with the naked eye before using AAN.
+\end{itemize}
+
+Another useful statistic (which we did not measure) would have been to compare the proportion of false positive error messages to actual bug error messages.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\section{Future Work}
+
+\subsection{Application to 15-410}
+
+In order to distribute this tool to 15-410 students to assist them during Project 3, it should be polished in the following ways.
+
+\subsubsection{Basecode Update}
+
+The header file, \texttt{aan.h}, should be distributed with the rest of the Project 3 basecode.
+The basecode (header files in \texttt{410kern/} and in \texttt{spec/}) should be updated to include the header and to have every function declaration annotated.
+
+A satisfactory version of the basecode in this regard is included in the project git repository / tarball.
+
+\subsubsection{Interface and Options}
+
+To encourage students to use the tool, its interface should be as friendly as possible.
+We would need to implement the following customisable features and select intelligent defaults:
+
+\begin{itemize}
+	\item A ``\texttt{MAGIC}'' annotation which allows the user to squelch known-false-positive errors. It would need to be supported on functions and on pointers of any type, to account for the \texttt{void *} casting idiom.
+	\item A command-line option which controls the default behaviour for checking unannotated functions, as described in section 4.3.
+	\item A command-line option for controlling whether certain warnings are emitted or not (for example, whether to warn on \texttt{void *} casts or not, or whether to warn on backwards jumps during flow control).
+\end{itemize}
+
+We would also need to write a comprehensive user guide, which would detail especially what to do in the case of strange coding idioms that should be refactored for AAN to understand, but without revealing too much about the kernel project to undermine the students' learning experience.
+\footnote{The current user guide is comprehensive, but without regard for revealing more than students should be allowed to see, since it was written for TAs and ex-TAs.}
+
+\subsection{Application to Production Kernels}
+
+The requirement to annotate every function in the codebase in order to obtain a useful guarantee about the presence or absence of atomic-sleep bugs is tractable in a tool that checks Pebbles kernels, which tend to be only a few thousand lines of code, but is not appropriate for multi-million line codebases such as Linux, as shown in the evaluation section.
+
+Rather, we would prefer a tool that could, across the whole codebase at once, automatically infer context requirements and solve annotation constraints, given a small number of ``special'' functions pre-annotated to seed the inference.
+
+In many cases of annotation gaps, it would be possible to infer what the correct annotation for the unannotated function or function pointer would be, and print it out for the user to use, or perhaps even automatically write it into the source file.
+
+A more thorough static analysis tool would be able to do inference on the entire code-base at once, and attempt to solve constraints to determine what the annotations of everything should be.
+All that would be required is annotating the ``magic'' functions, which implement the implicit rules itself (i.e., preemption disabling/enabling, scheduler interface, concurrency primitives, and interrupt handler framework).
+
+\subsection{Formalisation}
+
+We would like to formalise the logic of our type theory as an extension to the simply typed lambda calculus, and state and prove a preservation theorem for the language which would show that if all annotations in the program are correct and all function calls are deemed legal, then the program will never ``sleep'' in an ``atomic section''.
+The groundwork for this problem is laid out in appendix D.
+\footnote{This system would not be subject to the limitations described in the flow control section, because the simply typed lambda calculus is not turing complete.}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\section{Conclusion}
+
+Kernel programming frequently involves implicit rules about certain types of behaviours that are only legal in certain ``code contexts'', that are not traditionally expressed in the code itself. It can be difficult to discern whether a codebase follows these rules, and failure to follow these rules can lead to unpredictable and subtle bugs, called ``atomic-sleep'' bugs.
+
+We provide a system, called Atomic All-Nighters, for defining these rules explicitly and for annotating kernel code to make the rules explicitly communicated. We also provide a tool, called AAN, that checks code to verify the presence or absence of atomic-sleep bugs.
+
+In the face of undecidable input, AAN does its best to emit helpful warning messages, to ask the user to manually inspect the code. AAN attempts to provide useful guarantees about the meaning of its output, given the possibility of undecidability, missing annotations, violations of the C type system, and the like.
+
+We evaluated AAN by having several 15-410 TAs use it on Pebbles kernels that students have submitted for the class. We find that AAN is both usable and useful when it comes to the amount of time it takes to learn the tool, the amount of time it takes to annotate Pebbles kernels, and the ease of manual inspection to verify the presence or absence of bugs.
+We found several strange coding idioms which our system of rules is not powerful enough to accurately describe, and we describe ways in which we could improve the system to account for such patterns.
+We also discuss the possibility of extending the functionality of our tool to make it feasible to use on production kernels such as Linux.
+
+The code-base for Atomic All-Nighters, which includes a user's manual (\texttt{README}), can be obtained by running:
+\begin{center}
+	{\tt git clone http://maximegalon.andrew.cmu.edu/home/bblum/atomic-all-nighters}
+\end{center}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\section{Acknowledgements}
+
+The author would like to thank Garth Gibson and David Eckhardt for their guidance throughout the project, and to thank Garth Gibson and Jiri Simsa for their encouragement regarding the related work section.
+
+The author profusely thanks Caroline Buckey and Josiah Boning for their role as guinea-pigs in evaluating the ease-of-use of Atomic All-Nighters.
+
+The author also thanks Matthew Maurer, Jonathan Aldrich, Nathaniel Filardo, William Lovas, and Joshua Wise for their advice and suggestions pertaining to the background on which this project builds.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\section{References}
+
+\begin{enumerate}
+	\item %1
+	Dawson Engler, Benjamin Chelf, Andy Chou, and Seth Hallem. 2000. Checking system rules using system-specific, programmer-written compiler extensions. In Proceedings of the 4th conference on Symposium on Operating System Design \& Implementation - Volume 4 (OSDI'00), Vol. 4. USENIX Association, Berkeley, CA, USA, 1-1. % http://dl.acm.org/citation.cfm?id=1251230
+	\item %2
+	Ken Ashcraft and Dawson Engler. 2002. Using Programmer-Written Compiler Extensions to Catch Security Holes. In Proceedings of the 2002 IEEE Symposium on Security and Privacy (SP '02). IEEE Computer Society, Washington, DC, USA, 143-. % http://dl.acm.org/citation.cfm?id=830533
+	\item %3
+	Rob Johnson and David Wagner. 2004. Finding user/kernel pointer bugs with type inference. In Proceedings of the 13th conference on USENIX Security Symposium - Volume 13 (SSYM'04), Vol. 13. USENIX Association, Berkeley, CA, USA, 9-9. % http://dl.acm.org/citation.cfm?id=1251384
+	\item %4
+	Dawson Engler and Ken Ashcraft. 2003. RacerX: effective, static detection of race conditions and deadlocks. In Proceedings of the nineteenth ACM symposium on Operating systems principles (SOSP '03). ACM, New York, NY, USA, 237-252. % http://dl.acm.org/citation.cfm?id=945468
+	\item %5
+	Yichen Xie and Alex Aiken. 2005. Scalable error detection using boolean satisfiability. In Proceedings of the 32nd ACM SIGPLAN-SIGACT symposium on Principles of programming languages (POPL '05). ACM, New York, NY, USA, 351-363. % http://dl.acm.org/citation.cfm?id=1040334
+	\item %6
+	Jeffrey Scott Foster. 2002. Type Qualifiers: Lightweight Specifications to Improve Software Quality. Ph.D. Dissertation. University of California, Berkeley. AAI3082186. % http://dl.acm.org/citation.cfm?id=937193
+	\item %7
+	Jeffrey S. Foster, Tachio Terauchi, and Alex Aiken. 2002. Flow-sensitive type qualifiers. In Proceedings of the ACM SIGPLAN 2002 Conference on Programming language design and implementation (PLDI '02). ACM, New York, NY, USA, 1-12. % http://dl.acm.org/citation.cfm?id=512531
+	\item %8
+	Jeffrey S. Foster, Robert Johnson, John Kodumal, and Alex Aiken. 2006. Flow-insensitive type qualifiers. ACM Trans. Program. Lang. Syst. 28, 6 (November 2006), 1035-1087. % http://dl.acm.org/citation.cfm?id=1186635
+	\item %9
+	Thomas Ball and Sriram K. Rajamani. 2002. The SLAM project: debugging system software via static analysis. In Proceedings of the 29th ACM SIGPLAN-SIGACT symposium on Principles of programming languages (POPL '02). ACM, New York, NY, USA, 1-3. % http://dl.acm.org/citation.cfm?id=503274
+	\item %10
+	Thomas Ball and Sriram K. Rajamani. 2001. Automatically validating temporal safety properties of interfaces. In Proceedings of the 8th international SPIN workshop on Model checking of software (SPIN '01), Matthew Dwyer (Ed.). Springer-Verlag New York, Inc., New York, NY, USA, 103-122.  % http://dl.acm.org/citation.cfm?id=380932
+	\item %11
+	T. Ball and S. K. Rajamani. SLIC: A specification language for interface checking. Technical Report MSR-TR-2001-21, Microsoft Research, 2001. % http://research.microsoft.com/apps/pubs/default.aspx?id=69906 (?)
+	\item %12
+	Peter Breuer and Marison Valls. 2004. Static Deadlock Detection in the Linux Kernel. In Reliable Software Technologies - Ada-Europe 2004. 52-64. (Citation to abstract only; entire paper not available) % http://www.springerlink.com/content/j5e5fn1w6w43muru/
+	\item %13
+	Peter T. Breuer, Simon Pickin, and Maria Larrondo Petrie. 2006. Detecting Deadlock, Double-Free and Other Abuses in a Million Lines of Linux Kernel Source. In Proceedings of the 30th Annual IEEE/NASA Software Engineering Workshop (SEW '06). IEEE Computer Society, Washington, DC, USA, 223-233. (Citation to abstract only; entire paper not available) % http://dl.acm.org/citation.cfm?id=1264152
+	\item %14
+	Polyvios Pratikakis, Jeffrey S. Foster, and Michael Hicks. 2006. LOCKSMITH: context-sensitive correlation analysis for race detection. In Proceedings of the 2006 ACM SIGPLAN conference on Programming language design and implementation (PLDI '06). ACM, New York, NY, USA, 320-331. % http://dl.acm.org/citation.cfm?id=1134019
+	\item %15
+	Giuseppe Castagna. 1995. Covariance and contravariance: conflict without a cause. ACM Trans. Program. Lang. Syst. 17, 3 (May 1995), 431-447. % http://dl.acm.org/citation.cfm?id=203096
+	\item %16
+	Benjamin C. Pierce. 2002. Types and Programming Languages. MIT Press, Cambridge, MA, USA. Chapter 15, pp. 198-199.  % http://dl.acm.org/citation.cfm?id=509043
+	\item %17
+	Kevin Bierhoff and Jonathan Aldrich. 2007. Modular typestate checking of aliased objects. In Proceedings of the 22nd annual ACM SIGPLAN conference on Object-oriented programming systems and applications (OOPSLA '07). ACM, New York, NY, USA, 301-320. % http://dl.acm.org/citation.cfm?id=1297050
+	\item %18
+	Nels E. Beckman, Kevin Bierhoff, and Jonathan Aldrich. 2008. Verifying correct usage of atomic blocks and typestate. In Proceedings of the 23rd ACM SIGPLAN conference on Object-oriented programming systems languages and applications (OOPSLA '08). ACM, New York, NY, USA, 227-244. % http://dl.acm.org/citation.cfm?id=1449783
+	\item %19
+	Trevor Jim, J. Greg Morrisett, Dan Grossman, Michael W. Hicks, James Cheney, and Yanling Wang. 2002. Cyclone: A Safe Dialect of C. In Proceedings of the General Track of the annual conference on USENIX Annual Technical Conference (ATEC '02), Carla Schlatter Ellis (Ed.). USENIX Association, Berkeley, CA, USA, 275-288.  % http://dl.acm.org/citation.cfm?id=713871
+	\item %20
+	George C. Necula, Scott McPeak, and Westley Weimer. 2002. CCured: type-safe retrofitting of legacy code. In Proceedings of the 29th ACM SIGPLAN-SIGACT symposium on Principles of programming languages (POPL '02). ACM, New York, NY, USA, 128-139. % http://dl.acm.org/citation.cfm?id=503286
+	\item %21
+	Charles Killian, James W. Anderson, Ranjit Jhala, and Amin Vahdat. 2007. Life, death, and the critical transition: finding liveness bugs in systems code. In Proceedings of the 4th USENIX conference on Networked systems design \&\#38; implementation (NSDI'07). USENIX Association, Berkeley, CA, USA, 18-18. % http://dl.acm.org/citation.cfm?id=1973448 
+	\item %22
+	Madanlal Musuvathi and Shaz Qadeer. 2007. Iterative context bounding for systematic testing of multithreaded programs. In Proceedings of the 2007 ACM SIGPLAN conference on Programming language design and implementation (PLDI '07). ACM, New York, NY, USA, 446-455. % http://dl.acm.org/citation.cfm?id=1250785
+\end{enumerate}
+
+\appendix
+
+\section{Theory-demonstrating test cases}
+
+All test cases should be considered to begin with the following prelude:
+
+\begin{verbatim}
+#ifdef ATOMIC_ALL_NIGHTERS
+#define MAY_SLEEP           __attribute__((atomic_all_nighters("might_sleep")))
+#define WONT_SLEEP          __attribute__((atomic_all_nighters("wont_sleep")))
+#define EXIT_AND_SLEEP      __attribute__((atomic_all_nighters("might_sleep,exit_nested")))
+#define ENTER_ATOMIC        __attribute__((atomic_all_nighters("wont_sleep","force_enable")))
+#define EXIT_ATOMIC         __attribute__((atomic_all_nighters("wont_sleep","force_disable")))
+#define ENTER_ATOMIC_NESTED __attribute__((atomic_all_nighters("wont_sleep","enter_nested")))
+#define EXIT_ATOMIC_NESTED  __attribute__((atomic_all_nighters("wont_sleep","exit_nested")))
+#else
+#define MAY_SLEEP
+#define WONT_SLEEP
+#define EXIT_AND_SLEEP
+#define ENTER_ATOMIC
+#define EXIT_ATOMIC
+#define ENTER_ATOMIC_NESTED
+#define EXIT_ATOMIC_NESTED
+#endif
+
+struct mutex;
+struct spinlock;
+
+MAY_SLEEP void mutex_lock(struct mutex *mp);
+MAY_SLEEP void mutex_unlock(struct mutex *mp);
+WONT_SLEEP void mutex_assert_is_locked(struct mutex *mp);
+
+ENTER_ATOMIC_NESTED void spin_lock(struct spinlock *sp);
+EXIT_ATOMIC_NESTED void spin_unlock(struct spinlock *sp);
+
+struct spinlock *a;
+struct mutex *m;
+\end{verbatim}
+
+\subsection{Argument contravariance}
+
+This test case, \texttt{contravariant.c}, demonstrates contravariance on subtyped arguments during function pointer assignment.
+
+\begin{verbatim}
+WONT_SLEEP void g(void (*x)(struct mutex *) MAY_SLEEP) {
+    h = x;
+}
+
+MAY_SLEEP int main() {
+    // This should succeed.
+    void (*f)(void (*)(struct mutex *) WONT_SLEEP) WONT_SLEEP = g;
+    spin_lock(a);
+    f(mutex_assert_is_locked);
+    spin_unlock(a);
+    h(m);
+    return 0;
+}
+\end{verbatim}
+
+Our tool approves this test case.
+
+\subsubsection{Illegal argument covariance}
+
+This test case, \texttt{covariant.c}, demonstrates an illegal behaviour that could arise if covariant argument subtyping were allowed.
+
+\begin{verbatim}
+WONT_SLEEP void g(void (*x)(struct mutex *) WONT_SLEEP) {
+    spin_lock(a);
+    x(m);
+    spin_unlock(a);
+}
+MAY_SLEEP int main() {
+    // This should fail. Argument types must contravary, not covary.
+    void (*f)(void (*)(struct mutex *) MAY_SLEEP) WONT_SLEEP = g;
+    f(mutex_lock);
+    return 0;
+}
+\end{verbatim}
+
+Our tool emits the following error message on this test:
+\begin{verbatim}
+ERROR: at covariant.c:45,143: illegal subtyped function pointer assignment
+    dest (req'd supertype)  wont_sleep
+    src (req'd subtype)     might_sleep
+\end{verbatim}
+
+\subsection{Reference invariance}
+
+This test case, \texttt{banana-bowl.c}, demonstrates an illegal behaviour that could arise if subtyped assignment were allowed inside of reference cells.
+
+\begin{verbatim}
+int x;
+
+WONT_SLEEP void banana() {
+    x++;
+}
+MAY_SLEEP void apple() {
+    mutex_lock(m);
+    x++;
+    mutex_unlock(m);
+}
+
+struct banana_bowl {
+    void (*f)(void) WONT_SLEEP;
+};
+struct fruit_bowl {
+    void (*f)(void) MAY_SLEEP;
+};
+
+MAY_SLEEP int main() {
+    // This should fail.
+    // The struct pointer acts as a reference cell, assignment to which
+    // must be neither covariant nor contravariant.
+    struct banana_bowl bananas;
+    struct fruit_bowl *fruit;
+
+    bananas.f = banana;
+    fruit = &bananas;
+    fruit->f = apple;
+    spin_lock(a);
+    bananas.f();
+    spin_unlock(a);
+    return 0;
+}
+\end{verbatim}
+
+Our tool emits the following error message on this test:
+\begin{verbatim}
+ERROR: at banana-bowl.c:67,8: illegal invariant function pointer assignment
+    dest    might_sleep
+    src     wont_sleep
+\end{verbatim}
+
+\subsection{Type disjunction}
+
+The following test cases demonstrate type disjunction in ternary operators. They should all be considered to start with the following additional code:
+
+\begin{verbatim}
+/* h2 <= h1 */
+void (*h1)(struct mutex *) MAY_SLEEP;
+void (*h2)(struct mutex *) WONT_SLEEP;
+
+/* g1 <= g2 */
+WONT_SLEEP void g1(void (*x)(struct mutex *) MAY_SLEEP) {
+    h1 = x;
+}
+MAY_SLEEP void g2(void (*x)(struct mutex *) WONT_SLEEP) {
+    mutex_lock(m);
+    h2 = x;
+    mutex_unlock(m);
+}
+\end{verbatim}
+
+This test case, \texttt{union.c}, demonstrates correct type disjunction in ternary operators, including ``contravariance'' by intersection on argument types.
+
+\begin{verbatim}
+MAY_SLEEP int main() {
+    /* this should succeed */
+    void (*f)(void (*)(struct mutex *) WONT_SLEEP) MAY_SLEEP = 0 ? g1 : g2;
+    f(mutex_assert_is_locked);
+    spin_lock(a);
+    h2(m);
+    spin_unlock(a);
+    return 0;
+}
+\end{verbatim}
+
+Our tool approves this test case.
+
+\subsubsection{Illegal type intersection}
+
+This test case, \texttt{onion-grill.c}, demonstrates an illegal behaviour that could arise if type merging used intersection instead of disjunction.
+
+\begin{verbatim}
+MAY_SLEEP int main() {
+    /* this should fail - have to use union on the return type */
+    void (*f)(void (*)(struct mutex *) WONT_SLEEP) WONT_SLEEP = 0 ? g1 : g2;
+    spin_lock(a);
+    f(mutex_assert_is_locked);
+    spin_unlock(a);
+    h2(m);
+    return 0;
+}
+\end{verbatim}
+
+Our tool emits the following error message on this test:
+\begin{verbatim}
+ERROR: at onion-grill.c:57,144: illegal subtyped function pointer assignment
+    dest (req'd supertype)  wont_sleep
+    src (req'd subtype)     might_sleep
+\end{verbatim}
+
+\subsubsection{Illegal argument covariance during disjunction}
+
+This test case, \texttt{onion-station.c}, demonstrates an illegal behaviour that could arise if type merging disjoined on argument types instead of ``contravarying'' to intersection.
+
+\begin{verbatim}
+MAY_SLEEP int main() {
+    /* this should fail - have to use intersection on the argument type */
+    void (*f)(void (*)(struct mutex *) MAY_SLEEP) MAY_SLEEP = 0 ? g1 : g2;
+    f(mutex_lock);
+    return 0;
+}
+\end{verbatim}
+
+Our tool emits the following error message on this test:
+\begin{verbatim}
+ERROR: at onion-station.c:57,146: illegal subtyped function pointer assignment
+    dest (req'd supertype)  wont_sleep
+    src (req'd subtype)     might_sleep
+\end{verbatim}
+
+\section{Static analysis examples}
+
+\begin{verbatim}
+/* Spinlock interface */
+void spin_lock(lock_t *)   ENTER_NESTED;
+void spin_unlock(lock_t *) EXIT_NESTED;
+/* Blocking semaphore interface */
+void sem_down(lock_t *)    MAY_SLEEP;
+void sem_up(lock_t *)      WONT_SLEEP;
+
+/* Returns the task struct locked however the caller requested. */
+struct task_struct * MIGHT_SLEEP lookup_task(int tid, void (*lock_func)(lock_t *) ...)
+{
+    spin_lock(&tasklist_lock);
+    struct task_struct *task = __find_task_by_tid(tid);
+    /* Must take the task's lock under the protection of the global lock. */
+    lock_func(&task->lock);
+    spin_unlock(&tasklist_lock);
+    return task;
+}
+
+void MIGHT_SLEEP poke_tid(int tid)
+{
+    struct task_struct *task = lookup_task(tid, sem_down);
+    poke_task(task); /* Must be called with the task's semaphore held! */
+    sem_up(&task->lock);
+}
+\end{verbatim}
+
+Our tool will make a pass over the code on a per-function basis, accumulating a "context" for each line of code in the function according to what functions that function calls, and checking the legality of each function call and function pointer assignment.
+
+\subsubsection{Checking Example}
+
+In the above code sample, the annotation for the \texttt{lock\_func} function pointer argument to \texttt{lookup\_task} was intentionally left blank, so that the checking pass can be demonstrated with multiple values of it.
+
+If the annotation on \texttt{lock\_func} were \texttt{WONT\_SLEEP}, the checking pass would look as follows.
+\footnote{This example only suffices to demonstrate when function pointer assignment fails due to a \texttt{Rule} mismatch. \texttt{Effect} mismatches are simpler: they must always equal each other in an assignment.}
+
+\begin{itemize}
+	\item \texttt{lookup\_task} - use initial context given by the \texttt{MAY\_SLEEP} rule, which is \textsf{Nested $0$}.
+		\footnote{Note that, in this case, another acceptable annotation for this function would be \texttt{WONT\_SLEEP} - we would start with \textsf{Infinity} and it would still work.}
+	\begin{enumerate}
+		\item Calls \texttt{spin\_lock}.
+			\begin{itemize}
+				\item First check for the context matching - currently \textsf{Nested $0$}. The ``most restrictive context'' provided by \texttt{WONT\_SLEEP}, i.e., \textsf{Infinity}, is a ``subtype'' of that, so this call is safe.
+				\item Then allow the call to change the context. \texttt{spin\_lock}'s effect is \texttt{ENTER\_ATOMIC\_NESTED}, so the context goes to \textsf{Nested $1$}.
+			\end{itemize}
+		\item (ignoring \texttt{\_\_find\_task\_by\_tid} in this example)
+		\item Calls \texttt{lock\_func}.
+			\begin{itemize}
+				\item \texttt{WONT\_SLEEP}, as before.
+				\item No change to the context.
+			\end{itemize}
+		\item Calls \texttt{spin\_unlock}.
+			\begin{itemize}
+				\item \texttt{WONT\_SLEEP}, as before.
+				\item \texttt{EXIT\_ATOMIC\_NESTED} changes the context to \textsf{Nested $0$}.
+			\end{itemize}
+		\item At the end of the function, we check that the annotated effect of \texttt{lookup\_task} was accurate - the initial context applied to the effect should match the final context, which it does.
+			\footnote{This only ensures that the effect is accurate for the ``most restrictive context'' provided. This might break if a \texttt{WONT\_SLEEP} function also increments the preempt count (e.g. by taking a spinlock), but does not advertise this in its effect, since \textsf{Infinity} will stay \textsf{Infinity}. This could be solved by also checking each such function with a non-infinite context as well, to verify the effect, but for now we leave it to future work and place this burden on the user.}
+	\end{enumerate}
+	At this point we consider \texttt{lookup\_task} to be completely safe.
+	\item \texttt{poke\_tid} - initial context is \textsf{Nested $0$}.
+	\begin{enumerate}
+		\item Assigns \texttt{sem\_down} as the argument to \texttt{lookup\_task}. Take the provided ``most restrictive context'' from the annotation on the {\em argument function pointer type} (which from \texttt{WONT\_SLEEP} is \textsf{Infinity}), and compare it to the provided rule function on the {\em function pointer value} (\texttt{MAY\_SLEEP}). The value's type is not a subtype of the pointer's type, so the assignment is illegal.
+			\footnote{As mentioned before, effect equality checking also takes place here.}
+	\end{enumerate}	
+	At this point we print an error message: {\em ``illegal subtyped function pointer assignment''}.
+\end{itemize}
+
+\subsubsection{Checking Example 2}
+
+Here is what the checking pass does if the user were to correct the annotation to make the function pointer assignment legal (i.e., as \texttt{MAY\_SLEEP}).
+
+\begin{itemize}
+	\item \texttt{lookup\_task} - initial context is \texttt{Nested 0}.
+	\begin{enumerate}
+		\item Calls \texttt{spin\_lock}.
+			\begin{itemize}
+				\item \texttt{WONT\_SLEEP} approves of being called.
+				\item \texttt{ENTER\_ATOMIC\_NESTED} changes the context to \texttt{Nested 1}.
+			\end{itemize}
+		\item Calls \texttt{lock\_func}. This time, \texttt{MAY\_SLEEP} fails to compare against \texttt{Nested 1}. (Intuitively: We attempted to invoke a blocking function pointer in atomic context.)
+	\end{enumerate}
+	At this point we print an error message: {\em ``illegal function call''}.
+\end{itemize}
+
+\section{Understanding AAN's Output}
+
+AAN outputs several types of warnings.
+
+\begin{itemize}
+	\item Informational/tracing messages. These are off by default.
+	\item C typechecking warnings. If the code would confuse GCC, it will confuse AAN.
+	\item AAN warnings. These indicate ``dubious'' patterns to do with annotations, and mean there might be a bug that AAN couldn't figure out.
+		\begin{itemize}
+			\item ``merging flow'' means the branches of an if/switch ended up with different contexts. AAN chooses the ``most restrictive'' context at the end.
+			\item ``backward jump'': AAN will not do multi-pass, so something that it said was legal on its first pass might become illegal upon this backwards edge in the control flow graph.
+			\item ``missing annotation''/``invalid annotation'': should be pretty clear.
+			\item ``variadic args contain arrows'': passing function pointers as variadic arguments necessarily loses their type information, like casting to void*.
+		\end{itemize}
+	\item Errors. This means either AAN thinks it found an atomic-sleep bug or that your annotation was incorrect.
+		\begin{itemize}
+			\item ``unmergeable annotations'': in a ternary statement that returns function pointers, the annotations for each are incompatible.
+			\item ``illegal subtyped function pointer assignment'': attempt to assign e.g. a \texttt{MAY\_SLEEP} function to a \texttt{WONT\_SLEEP} pointer.
+			\item ``illegal invariant function pointer assignment'': in reference cells (mutability), even subtyping is illegal.
+			\item ``illegal function call'': attempt to call e.g. a \texttt{MAY\_SLEEP} function in atomic context.
+			\item ``exit context != advertised effect'': The professed effect of the function being checked did not match the changed context that came out at the end.
+			\item ``not all exit contexts match each other'': should be pretty clear.
+			\item ``illegal context effect'': Attempt to decrement the preempt counter when it's already zero.
+		\end{itemize}
+\end{itemize}
+
+\section{Formalisation}
+
+The following is a formalisation of our type system as an extension to the simply-typed lambda calculus. We call it ``System AAN''.
+
+\subsection{Grammar}
+
+The grammar consists of contexts ($C$), effects ($E$), rules ($R$), annotations ($A$), types ($\tau$), expressions ($e$), and programs ($p$).
+
+\begin{eqnarray*}
+	C & ::= & {\sf Nested}~ X ~|~ {\sf Infinity} \\
+	E & ::= & {\sf IncDec}~ X ~|~ {\sf Enable} ~|~ {\sf Disable} \\
+	A & ::= & (C,E) \\
+	\tau & ::= & 1 ~|~ \tau \rightarrow \tau \{A\} \\
+	e & ::= & x ~|~ \lambda x:\tau . e' \{A\} ~|~ {\sf inc} ~|~ {\sf dec} ~|~ {\sf sleep}
+\end{eqnarray*}
+
+\subsection{Judgements}
+
+The static semantic judgements are as follows.
+\begin{enumerate}
+	\item Context ordering: \[ C_1 \le C_2\]
+	\item Effect equality: \[ E_1 \equiv E_2 \]
+	\item Annotation ordering: \[ A_1 \le A_2 \]
+	\item Subtyping: \[ \tau_1 <: \tau_2 \]
+	\item Static annotation-checking: \[ \Gamma \vdash e : \tau \{A\} \]
+\suspend{enumerate}
+The dynamic semantic judgements are as follows.
+\resume{enumerate}
+	\item Effecting contexts: \[ E \lightning C_1 \rightsquigarrow C_2 \]
+	\item Call-site legality: \[ A @ C \checkmark \]
+	\item Stepping: \[ e_1\{A_1\}@C_1 \mapsto e_2\{A_2\}@C_2 \]
+\end{enumerate}
+
+The inference rules are left to future work.
+
+\subsection{Preservation}
+
+The preservation statement for System AAN is:
+
+\begin{center}
+	If $\vdash e_1 : \tau\{A_1\}$ and $e_1\{A_1\}@C_1 \mapsto e_2\{A_2\}@C_2$, then $\vdash e_2 : \tau\{A_2\}$.
+\end{center}
+
+Intuitively, if the rules of the annotation-checking system verify an annotated program as legal, then it will never invoke the {\sf sleep} primitive when the context value is greater than zero.
+\footnote{Notably, to make this statement provable, we need to allow for the counter in the context to go negative (and for sleeping to be allowed in any non-positive context). This prevents us from detecting the possible illegal behaviour of trying to re-enable preemption when it is already on, but this does not impact our ability to find the actual atomic-sleep bug.}
+
+The proof of this is left to future work.
+\footnote{We are not sure if it is actually provable.}
+
+
+\end{document}
