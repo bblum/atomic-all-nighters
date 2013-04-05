@@ -1,0 +1,139 @@
+\documentclass{article}
+\usepackage{amsmath,amsthm,amssymb,fullpage,yfonts,graphicx,proof,appendix,hyperref,mdwlist,wasysym}
+\usepackage{upgreek}
+\usepackage{epsfig}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage[bottom]{footmisc}
+\usepackage{bera}
+\usepackage[T1]{fontenc}
+
+\begin{document}
+\captionsetup{width=.75\textwidth,font=small,labelfont=bf}
+\title{{\bf Atomic All-Nighters: \\ Static Context Checking in Kernel Codebases} \\ {\em Correctness Proof}}
+\author{Ben Blum (\texttt{bblum@cs.cmu.edu})}
+\maketitle
+
+\newcommand\true{\;\textit{true}}
+\newcommand\false{\;\textit{false}}
+
+\newcommand\alpher\alpha
+\newcommand\beter\beta
+\newcommand\gammer\gamma
+\newcommand\delter\delta
+\newcommand\zeter\zeta
+\newcommand\Sigmer\Sigma
+
+\newcommand\NN{\mathbb{N}}
+\newcommand\QQ{\mathbb{Q}}
+\newcommand\RR{\mathbb{R}}
+\newcommand\ZZ{\mathbb{Z}}
+
+\newcommand\Infinity{ {\sf Infinity}}
+\newcommand{\Nested}[1]{ {\sf Nested}~ #1}
+\newcommand{\IncDec}[1]{ {\sf IncDec}~ #1}
+\newcommand\Enable{ {\sf Enable}}
+\newcommand\Disable{ {\sf Disable}}
+\newcommand\inc{ {\sf inc}}
+\newcommand\dec{ {\sf dec}}
+
+\newcommand\sleep{{\sf sleep}}
+\newcommand\unit{{1}}
+
+\begin{abstract}
+This is a correctness proof for the formal representation of the Atomic All-Nighters ``type-check''.
+The formalism is for ``straight-line`` programs only (i.e., programs with no flow control), though variables and function pointers are included. Programs are represented as a set of functions that operate as a stack machine.
+We aim to prove that, if a program passes the check, it cannot invoke the \sleep~primitive while the context is nonzero.
+\end{abstract}
+
+
+\section{Definitions}
+
+The grammar consists of contexts ($C$), effects ($E$), rules ($R$), annotations ($A$), types ($\tau$), expressions ($e$), and programs ($p$).
+
+\newcommand\expr{\ensuremath{\mathsf{e}}}
+\newcommand\stmt{\ensuremath{\mathsf{st}}}
+\newcommand\decl{\ensuremath{\mathsf{decl}}}
+\newcommand\fn{\ensuremath{\mathsf{fn}}}
+\newcommand\lv{\ensuremath{\mathsf{lv}}}
+\newcommand\prog{\ensuremath{\mathcal{P}}}
+\newcommand\fnname{\ensuremath{f}}
+\newcommand\varname{\ensuremath{x}}
+\newcommand\addr{\ensuremath{\&}}
+\newcommand\rep[1]{\ensuremath{\overline{#1}}}
+\newcommand\return{\ensuremath{\mathsf{return}}}
+
+\begin{figure}[h]
+	\begin{subfigure}[b]{0.5\textwidth}
+	\begin{eqnarray*}
+		C & ::= & \Nested{X} ~|~ {\Infinity} \\
+		R & ::= & C \\
+		E & ::= & \IncDec{X} ~|~ {\Enable} ~|~ {\Disable} \\
+		A & ::= & (R,E) \\
+		\tau & ::= & \unit ~|~ \rep{\tau} \rightarrow \tau \{A\} ~|~ *\tau \\
+	\end{eqnarray*}
+	\caption{The type language.}
+	\end{subfigure}
+	\begin{subfigure}[b]{0.5\textwidth}
+	\begin{eqnarray*}
+		\expr & ::= & () ~|~ \fnname ~|~ \fnname(\rep{\varname}) ~|~ \varname ~|~ \addr \varname ~|~ *\varname \\
+		\lv   & ::= & \varname ~|~ *\varname \\
+		\stmt & ::= & \lv = \expr \\
+		\decl & ::= & \tau~\varname \\
+		\fn   & ::= & \tau~\fnname(\rep{\decl}) \{ \rep{\decl;}~\rep{\stmt;}~\return~\expr \} \\
+		\prog & ::= & \rep{\fn}
+		% e & ::= & x ~|~ \lambda x:\tau . e' \{A\} ~|~ {\inc} ~|~ {\dec} ~|~ {\sleep}
+	\end{eqnarray*}
+	\caption{The term language.}
+	\end{subfigure}
+\end{figure}
+
+\begin{itemize}
+	\item A context $C$ represents the current state of the program. It can roughly be thought of as indicating the number of spinlocks that the program is currently holding.
+	\item A rule $R$ represents the ``most restrictive'' context that a function is allowed to be called in. For a function that might sleep, the rule must be $\Nested{0}$. For the rest of the proof we will treat rules and contexts as interchangeable.
+	\item An effect $E$ represents how the current context of a program is changed when it calls a function (i.e., the aggregate effect between invocation and return).
+	\item An annotation $A$ characterises the complete behaviour of a function (with respect to AAN).
+	\item A type $\tau$ is associated with each function and variable (function pointer) in the program. It can be either unit, a function type with an associated annotation, or a pointer (representing mutable memory).
+	\item A program \prog~is a list of functions.
+	\item A function \fn~consists of a return type, a name, a list of parameters, and an execution block consisting of a list of variable declarations, statements, and the return of an expression.
+	\item A declarator \decl~introduces a variable of a given type and name into the current block's scope.
+	\item A statement \stmt~assigns the value of an expression to a storage location.
+	\item An lvalue \lv~specifies a storage location: a variable or the dereference of a variable.
+	\item An expression \expr~can be either unit, the name of a function (creating a function pointer), a function call, the name of a variable, the address of a variable, or the dereference of a variable.
+\end{itemize}
+
+\subsection{Judgements}
+
+The static semantic judgements are as follows.
+\begin{enumerate}
+	\item Context ordering: \[ C_1 \le C_2\]
+	\item Effect equality: \[ E_1 \equiv E_2 \]
+	\item Annotation ordering: \[ A_1 \le A_2 \]
+	\item Subtyping: \[ \tau_1 <: \tau_2 \]
+	\item Static annotation-checking: \[ \Gamma \vdash e : \tau \{A\} \]
+\suspend{enumerate}
+The dynamic semantic judgements are as follows.
+\resume{enumerate}
+	\item Effecting contexts: \[ E \lightning C_1 \rightsquigarrow C_2 \]
+	\item Call-site legality: \[ A @ C \checkmark \]
+	\item Stepping: \[ e_1\{A_1\}@C_1 \mapsto e_2\{A_2\}@C_2 \]
+\end{enumerate}
+
+The inference rules are left to future work.
+
+\subsection{Preservation}
+
+The preservation statement for System AAN is:
+
+\begin{center}
+	If $\vdash e_1 : \tau\{A_1\}$ and $e_1\{A_1\}@C_1 \mapsto e_2\{A_2\}@C_2$, then $\vdash e_2 : \tau\{A_2\}$.
+\end{center}
+
+Intuitively, if the rules of the annotation-checking system verify an annotated program as legal, then it will never invoke the {\sf sleep} primitive when the context value is greater than zero.
+\footnote{Notably, to make this statement provable, we need to allow for the counter in the context to go negative (and for sleeping to be allowed in any non-positive context). This prevents us from detecting the possible illegal behaviour of trying to re-enable preemption when it is already on, but this does not impact our ability to find the actual atomic-sleep bug.}
+
+The proof of this is left to future work.
+\footnote{We are not sure if it is actually provable.}
+
+
+\end{document}
