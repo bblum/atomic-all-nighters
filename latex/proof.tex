@@ -1,6 +1,9 @@
 \documentclass{article}
 \usepackage{amsmath,amsthm,amssymb,fullpage,yfonts,graphicx,proof,appendix,hyperref,mdwlist,wasysym}
+\usepackage{stmaryrd}
+\usepackage{mathpartir}
 \usepackage{upgreek}
+\usepackage{fge}
 \usepackage{epsfig}
 \usepackage{caption}
 \usepackage{subcaption}
@@ -42,14 +45,17 @@
 
 \begin{abstract}
 This is a correctness proof for the formal representation of the Atomic All-Nighters ``type-check''.
-The formalism is for ``straight-line`` programs only (i.e., programs with no flow control), though variables and function pointers are included. Programs are represented as a set of functions that operate as a stack machine.
+% The formalism is for ``straight-line`` programs only (i.e., programs with no flow control), though variables and function pointers are included. Programs are represented as a set of functions that operate as a stack machine.
+The formalism is for simply-typed lambda calculus programs, so invariance and mutable storage locations are not included. Higher-order functions, contravariance, and covariance are featured nevertheless.
 We aim to prove that, if a program passes the check, it cannot invoke the \sleep~primitive while the context is nonzero.
 \end{abstract}
 
 
 \section{Definitions}
 
-The grammar consists of contexts ($C$), effects ($E$), rules ($R$), annotations ($A$), types ($\tau$), expressions ($e$), and programs ($p$).
+The grammar consists of contexts ($C$), effects ($E$), rules ($R$), annotations ($A$), types ($\tau$),
+% expressions ($e$), and programs ($p$).
+and expressions ($e$).
 
 \newcommand\expr{\ensuremath{\mathsf{e}}}
 \newcommand\stmt{\ensuremath{\mathsf{st}}}
@@ -62,31 +68,41 @@ The grammar consists of contexts ($C$), effects ($E$), rules ($R$), annotations 
 \newcommand\addr{\ensuremath{\&}}
 \newcommand\rep[1]{\ensuremath{\overline{#1}}}
 \newcommand\return{\ensuremath{\mathsf{return}}}
+\newcommand\ctx[2]{\ensuremath{#1@#2}}
 
-\begin{figure}[h]
-	\begin{subfigure}[b]{0.5\textwidth}
-	\begin{eqnarray*}
-		C & ::= & \Nested{X} ~|~ {\Infinity} \\
-		R & ::= & C \\
-		E & ::= & \IncDec{X} ~|~ {\Enable} ~|~ {\Disable} \\
-		A & ::= & (R,E) \\
-		\tau & ::= & \unit ~|~ \rep{\tau} \rightarrow \tau \{A\} ~|~ *\tau \\
-	\end{eqnarray*}
-	\caption{The type language.}
-	\end{subfigure}
-	\begin{subfigure}[b]{0.5\textwidth}
-	\begin{eqnarray*}
-		\expr & ::= & () ~|~ \fnname ~|~ \fnname(\rep{\varname}) ~|~ \varname ~|~ \addr \varname ~|~ *\varname \\
-		\lv   & ::= & \varname ~|~ *\varname \\
-		\stmt & ::= & \lv = \expr \\
-		\decl & ::= & \tau~\varname \\
-		\fn   & ::= & \tau~\fnname(\rep{\decl}) \{ \rep{\decl;}~\rep{\stmt;}~\return~\expr \} \\
-		\prog & ::= & \rep{\fn}
-		% e & ::= & x ~|~ \lambda x:\tau . e' \{A\} ~|~ {\inc} ~|~ {\dec} ~|~ {\sleep}
-	\end{eqnarray*}
-	\caption{The term language.}
-	\end{subfigure}
-\end{figure}
+%\begin{figure}[h]
+%	\begin{subfigure}[b]{0.5\textwidth}
+%	\begin{eqnarray*}
+%		C & ::= & \Nested{X} ~|~ {\Infinity} \\
+%		R & ::= & C \\
+%		E & ::= & \IncDec{X} ~|~ {\Enable} ~|~ {\Disable} \\
+%		A & ::= & (R,E) \\
+%		\tau & ::= & \unit ~|~ \rep{\tau} \rightarrow \tau \{A\} ~|~ *\tau \\
+%	\end{eqnarray*}
+%	\caption{The type language.}
+%	\end{subfigure}
+%	\begin{subfigure}[b]{0.5\textwidth}
+%	\begin{eqnarray*}
+%		\expr & ::= & () ~|~ \fnname ~|~ \fnname(\rep{\varname}) ~|~ \varname ~|~ \addr \varname ~|~ *\varname \\
+%		\lv   & ::= & \varname ~|~ *\varname \\
+%		\stmt & ::= & \lv = \expr \\
+%		\decl & ::= & \tau~\varname \\
+%		\fn   & ::= & \tau~\fnname(\rep{\decl}) \{ \rep{\decl;}~\rep{\stmt;}~\return~\expr \} \\
+%		\prog & ::= & \rep{\fn}
+%		% e & ::= & x ~|~ \lambda x:\tau . e' \{A\} ~|~ {\inc} ~|~ {\dec} ~|~ {\sleep}
+%	\end{eqnarray*}
+%	\caption{The term language.}
+%	\end{subfigure}
+%\end{figure}
+\begin{eqnarray*}
+	C & ::= & \Nested{X} ~|~ {\Infinity} \\
+	R & ::= & C \\
+	E & ::= & \IncDec{X} ~|~ {\Enable} ~|~ {\Disable} \\
+	A & ::= & (R,E) \\
+	\tau & ::= & \unit ~|~ \rep{\tau} \rightarrow \tau \{A\} ~|~ *\tau \\
+	e & ::= & x ~|~ \lambda x:\tau . e' \{A\} ~|~ e_1 e_2 ~|~ {\inc} ~|~ {\dec} ~|~ {\sleep} ~|~ () \\
+	\prog ::= \ctx{e}{C} \\
+\end{eqnarray*}
 
 \begin{itemize}
 	\item A context $C$ represents the current state of the program. It can roughly be thought of as indicating the number of spinlocks that the program is currently holding.
@@ -94,34 +110,77 @@ The grammar consists of contexts ($C$), effects ($E$), rules ($R$), annotations 
 	\item An effect $E$ represents how the current context of a program is changed when it calls a function (i.e., the aggregate effect between invocation and return).
 	\item An annotation $A$ characterises the complete behaviour of a function (with respect to AAN).
 	\item A type $\tau$ is associated with each function and variable (function pointer) in the program. It can be either unit, a function type with an associated annotation, or a pointer (representing mutable memory).
-	\item A program \prog~is a list of functions.
-	\item A function \fn~consists of a return type, a name, a list of parameters, and an execution block consisting of a list of variable declarations, statements, and the return of an expression.
-	\item A declarator \decl~introduces a variable of a given type and name into the current block's scope.
-	\item A statement \stmt~assigns the value of an expression to a storage location.
-	\item An lvalue \lv~specifies a storage location: a variable or the dereference of a variable.
-	\item An expression \expr~can be either unit, the name of a function (creating a function pointer), a function call, the name of a variable, the address of a variable, or the dereference of a variable.
+	%\item A program \prog~is a list of functions.
+	%\item A function \fn~consists of a return type, a name, a list of parameters, and an execution block consisting of a list of variable declarations, statements, and the return of an expression.
+	%\item A declarator \decl~introduces a variable of a given type and name into the current block's scope.
+	%\item A statement \stmt~assigns the value of an expression to a storage location.
+	%\item An lvalue \lv~specifies a storage location: a variable or the dereference of a variable.
+	%\item An expression \expr~can be either unit, the name of a function (creating a function pointer), a function call, the name of a variable, the address of a variable, or the dereference of a variable.
+	\item An expression \expr~is the familiar lambda calculus expression with a few new primitives. Lambda terms are explicitly annotated, and there are additional terms for unit, increment-context, decrement-context, and sleep. For convenience we will also use the notation $e_1;e_2$ as sugar for $(\lambda _:\tau_1. e_2) e_1$ (where $\tau_1$ is whatever $e_1$ typechecks as). (The operational semantics are, of course, call-by-value.)
 \end{itemize}
 
-\subsection{Judgements}
+\newcommand\eff[3]{\ensuremath{#1 \lightning #2 \rightsquigarrow #3}}
+\newcommand\subctx\preccurlyeq
+\newcommand\subann\unlhd
+\newcommand\effecteq\equiv
+\newcommand\subtype{<:}
+\newcommand\callsite[2]{\ensuremath{#1 @ #2 \checkmark}}
+\newcommand\synth[2]{\ensuremath{#1 \fgerightarrow #2}}
 
-The static semantic judgements are as follows.
-\begin{enumerate}
-	\item Context ordering: \[ C_1 \le C_2\]
-	\item Effect equality: \[ E_1 \equiv E_2 \]
-	\item Annotation ordering: \[ A_1 \le A_2 \]
-	\item Subtyping: \[ \tau_1 <: \tau_2 \]
-	\item Static annotation-checking: \[ \Gamma \vdash e : \tau \{A\} \]
-\suspend{enumerate}
-The dynamic semantic judgements are as follows.
-\resume{enumerate}
-	\item Effecting contexts: \[ E \lightning C_1 \rightsquigarrow C_2 \]
-	\item Call-site legality: \[ A @ C \checkmark \]
-	\item Stepping: \[ e_1\{A_1\}@C_1 \mapsto e_2\{A_2\}@C_2 \]
-\end{enumerate}
+\section{Judgements and Rules}
 
-The inference rules are left to future work.
+\begin{figure}[h]
+	\begin{subfigure}[b]{0.5\textwidth}
+	\begin{tabular}{rl}
+		Context ordering & $C_1 \subctx C_2$ \\
+		Effect equality & $E_1 \effecteq E_2 $ \\
+		Annotation ordering & $A_1 \subann A_2 $ \\
+		Subtyping & $\tau_1 \subtype \tau_2 $ \\
+		Call-site legality & $\callsite{A}{C} $ \\
+		Effect synthesis & $\Gamma \vdash \synth{e}{E}$ \\
+		Annotation checking & $\Gamma \vdash e : \tau \{A\}$ \\
+	\end{tabular}
+	\caption{Checking judgements}
+	\end{subfigure}
+	\begin{subfigure}[b]{0.5\textwidth}
+	\begin{tabular}{rl}
+		Effecting contexts & $\eff{E}{C_1}{C_2} $ \\
+		Stepping & $\ctx{e_1}{C_1} \mapsto \ctx{e_2}{C_2} $ \\
+	\end{tabular}
+	\caption{Evaluation judgements}
+	\end{subfigure}
+	\caption{Summary of judgements.}
+	\label{fig:judge}
+\end{figure}
 
-\subsection{Preservation}
+\begin{figure}[h]
+	% subcontext
+	\fbox{$C_1 \subctx C_2$}
+	\begin{mathpar}
+	\infer[\subctx I]{\Infinity \subctx C}{} \qquad
+	\infer[\subctx N]{\Nested{X} \subctx \Nested{Y}}{X \ge Y} \qquad
+	\end{mathpar}
+	% effect eq
+	\fbox{$E_1 \effecteq E_2$}
+	\begin{mathpar}
+	\infer[\effecteq I]{\IncDec{X} \effecteq \IncDec{X}}{} \qquad
+	\infer[\effecteq E]{\Enable \effecteq \Enable}{} \qquad
+	\infer[\effecteq D]{\Disable \effecteq \Disable}{} \qquad
+	\end{mathpar}
+	% subann
+	\fbox{$A_1 \subann A_2$}
+	\begin{mathpar}
+	\infer[\subann]{(R_1,E_1) \subann (R_2,E_2)}{R_1 \subctx R_2 \quad E_1 \effecteq E_2} \qquad
+	\end{mathpar}
+	TODO
+	\caption{Static checking rules.}
+	\label{fig:checking}
+\end{figure}
+
+Figure \ref{fig:judge} summarises the static and dynamic judgements.
+Figure \ref{fig:checking} depicts the checking rules in detail.
+
+\section{Preservation}
 
 The preservation statement for System AAN is:
 
