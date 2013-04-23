@@ -1,5 +1,41 @@
+diff -ruN 410kern-base/aan.h 410kern/aan.h
+--- 410kern-base/aan.h	1969-12-31 19:00:00.000000000 -0500
++++ 410kern/aan.h	2013-04-23 17:46:58.000000000 -0400
+@@ -0,0 +1,32 @@
++/**
++ * @file aan.h
++ * @brief Macro definitions for atomic all-nighters.
++ * @author Ben Blum <bblum@andrew.cmu.edu>
++ */
++
++#ifndef __AAN_H
++#define __AAN_H
++
++#ifdef ATOMIC_ALL_NIGHTERS
++/* function annotations */
++#define MAY_SLEEP           __attribute__((atomic_all_nighters("might_sleep")))
++#define WONT_SLEEP          __attribute__((atomic_all_nighters("wont_sleep")))
++#define EXIT_AND_SLEEP      __attribute__((atomic_all_nighters("nested_one","exit_nested")))
++
++/* context-changing annotations */
++#define ENTER_ATOMIC        __attribute__((atomic_all_nighters("wont_sleep","force_disable")))
++#define EXIT_ATOMIC         __attribute__((atomic_all_nighters("wont_sleep","force_enable")))
++#define ENTER_ATOMIC_NESTED __attribute__((atomic_all_nighters("wont_sleep","enter_nested")))
++#define EXIT_ATOMIC_NESTED  __attribute__((atomic_all_nighters("wont_sleep","exit_nested")))
++
++#else
++#define MAY_SLEEP
++#define WONT_SLEEP
++#define EXIT_AND_SLEEP
++#define ENTER_ATOMIC
++#define EXIT_ATOMIC
++#define ENTER_ATOMIC_NESTED
++#define EXIT_ATOMIC_NESTED
++#endif
++
++#endif
 diff -ruN 410kern-base/elf/elf_410.h 410kern/elf/elf_410.h
---- 410kern-base/elf/elf_410.h	2013-04-23 17:29:17.000000000 -0400
+--- 410kern-base/elf/elf_410.h	2013-04-23 17:51:37.000000000 -0400
 +++ 410kern/elf/elf_410.h	2013-04-23 17:26:46.000000000 -0400
 @@ -5,6 +5,7 @@
  #ifndef _ELF_ELF_410_H_
@@ -22,7 +58,7 @@ diff -ruN 410kern-base/elf/elf_410.h 410kern/elf/elf_410.h
  
  #endif
 diff -ruN 410kern-base/inc/assert.h 410kern/inc/assert.h
---- 410kern-base/inc/assert.h	2013-04-23 17:29:17.000000000 -0400
+--- 410kern-base/inc/assert.h	2013-04-23 17:51:37.000000000 -0400
 +++ 410kern/inc/assert.h	2013-04-23 17:26:49.000000000 -0400
 @@ -23,7 +23,9 @@
  #ifndef _ASSERT_H_
@@ -36,7 +72,7 @@ diff -ruN 410kern-base/inc/assert.h 410kern/inc/assert.h
  #define assert(expression)  \
  	((void)((expression) ? 0 : (panic("%s:%u: failed assertion `%s'", \
 diff -ruN 410kern-base/inc/malloc.h 410kern/inc/malloc.h
---- 410kern-base/inc/malloc.h	2013-04-23 17:29:17.000000000 -0400
+--- 410kern-base/inc/malloc.h	2013-04-23 17:51:37.000000000 -0400
 +++ 410kern/inc/malloc.h	2013-04-23 17:26:53.000000000 -0400
 @@ -4,13 +4,15 @@
  #ifndef _MALLOC_WRAPPERS_H_
@@ -63,7 +99,7 @@ diff -ruN 410kern-base/inc/malloc.h 410kern/inc/malloc.h
  
  #endif /* _MALLOC_WRAPPERS_H_ */
 diff -ruN 410kern-base/lmm/lmm.h 410kern/lmm/lmm.h
---- 410kern-base/lmm/lmm.h	2013-04-23 17:29:17.000000000 -0400
+--- 410kern-base/lmm/lmm.h	2013-04-23 17:51:37.000000000 -0400
 +++ 410kern/lmm/lmm.h	2013-04-23 17:26:56.000000000 -0400
 @@ -26,6 +26,7 @@
  #ifndef _MACH_LMM_H_
@@ -113,7 +149,7 @@ diff -ruN 410kern-base/lmm/lmm.h 410kern/lmm/lmm.h
  
  #endif /* _MACH_LMM_H_ */
 diff -ruN 410kern-base/malloc/malloc_internal.h 410kern/malloc/malloc_internal.h
---- 410kern-base/malloc/malloc_internal.h	2013-04-23 17:29:17.000000000 -0400
+--- 410kern-base/malloc/malloc_internal.h	2013-04-23 17:51:37.000000000 -0400
 +++ 410kern/malloc/malloc_internal.h	2013-04-23 17:26:58.000000000 -0400
 @@ -22,18 +22,19 @@
  #ifndef _410KERN_MALLOC_INTERNALS_H_
@@ -155,7 +191,7 @@ diff -ruN 410kern-base/malloc/malloc_internal.h 410kern/malloc/malloc_internal.h
  
  #endif /* _410KERN_MALLOC_H_ */
 diff -ruN 410kern-base/misc/kernel.mk 410kern/misc/kernel.mk
---- 410kern-base/misc/kernel.mk	2013-04-23 17:29:17.000000000 -0400
+--- 410kern-base/misc/kernel.mk	2013-04-23 17:51:37.000000000 -0400
 +++ 410kern/misc/kernel.mk	2013-04-23 17:26:59.000000000 -0400
 @@ -4,6 +4,6 @@
  410K_MISC_OBJS := $(410K_MISC_OBJS:%=$(410KDIR)/misc/%)
@@ -166,7 +202,7 @@ diff -ruN 410kern-base/misc/kernel.mk 410kern/misc/kernel.mk
  
  $(410KDIR)/libmisc.a: $(410K_MISC_OBJS)
 diff -ruN 410kern-base/simics/simics.h 410kern/simics/simics.h
---- 410kern-base/simics/simics.h	2013-04-23 17:29:17.000000000 -0400
+--- 410kern-base/simics/simics.h	2013-04-23 17:51:37.000000000 -0400
 +++ 410kern/simics/simics.h	2013-04-23 17:27:00.000000000 -0400
 @@ -24,44 +24,46 @@
  
@@ -227,7 +263,7 @@ diff -ruN 410kern-base/simics/simics.h 410kern/simics/simics.h
  /* "Compatibility mode" for old code */
  #define MAGIC_BREAK sim_breakpoint()
 diff -ruN 410kern-base/stdio/stdio.h 410kern/stdio/stdio.h
---- 410kern-base/stdio/stdio.h	2013-04-23 17:29:17.000000000 -0400
+--- 410kern-base/stdio/stdio.h	2013-04-23 17:51:38.000000000 -0400
 +++ 410kern/stdio/stdio.h	2013-04-23 17:27:02.000000000 -0400
 @@ -22,24 +22,25 @@
  #define _FLUX_MC_STDIO_H
@@ -266,7 +302,7 @@ diff -ruN 410kern-base/stdio/stdio.h 410kern/stdio/stdio.h
  #endif  /* !ASSEMBLER */
  
 diff -ruN 410kern-base/stdlib/ctype.h 410kern/stdlib/ctype.h
---- 410kern-base/stdlib/ctype.h	2013-04-23 17:29:17.000000000 -0400
+--- 410kern-base/stdlib/ctype.h	2013-04-23 17:51:38.000000000 -0400
 +++ 410kern/stdlib/ctype.h	2013-04-23 17:27:03.000000000 -0400
 @@ -18,20 +18,22 @@
  #ifndef _FLUX_MC_CTYPE_H_
@@ -306,7 +342,7 @@ diff -ruN 410kern-base/stdlib/ctype.h 410kern/stdlib/ctype.h
  
  #endif	/* _FLUX_MC_CTYPE_H_ */
 diff -ruN 410kern-base/stdlib/stdlib.h 410kern/stdlib/stdlib.h
---- 410kern-base/stdlib/stdlib.h	2013-04-23 17:29:17.000000000 -0400
+--- 410kern-base/stdlib/stdlib.h	2013-04-23 17:51:38.000000000 -0400
 +++ 410kern/stdlib/stdlib.h	2013-04-23 17:27:12.000000000 -0400
 @@ -1,23 +1,24 @@
  #ifndef _STDLIB_H_
@@ -342,7 +378,7 @@ diff -ruN 410kern-base/stdlib/stdlib.h 410kern/stdlib/stdlib.h
  
  #endif
 diff -ruN 410kern-base/string/string.h 410kern/string/string.h
---- 410kern-base/string/string.h	2013-04-23 17:29:17.000000000 -0400
+--- 410kern-base/string/string.h	2013-04-23 17:51:38.000000000 -0400
 +++ 410kern/string/string.h	2013-04-23 17:27:13.000000000 -0400
 @@ -21,37 +21,38 @@
  #ifndef _FLUX_MC_STRING_H_
@@ -407,7 +443,7 @@ diff -ruN 410kern-base/string/string.h 410kern/string/string.h
  
  #endif	/* _FLUX_MC_STRING_H_ */
 diff -ruN 410kern-base/toplevel.mk 410kern/toplevel.mk
---- 410kern-base/toplevel.mk	2013-04-23 17:29:17.000000000 -0400
+--- 410kern-base/toplevel.mk	2013-04-23 17:51:38.000000000 -0400
 +++ 410kern/toplevel.mk	2013-04-23 17:27:14.000000000 -0400
 @@ -16,9 +16,7 @@
  		--start-group $(410KLIBS) --end-group
@@ -421,7 +457,7 @@ diff -ruN 410kern-base/toplevel.mk 410kern/toplevel.mk
  $(patsubst %,%.strip,$(FINALTARGETS)) : %.strip : %
  	$(OBJCOPY) -g $< $@
 diff -ruN 410kern-base/x86/asm.h 410kern/x86/asm.h
---- 410kern-base/x86/asm.h	2013-04-23 17:29:17.000000000 -0400
+--- 410kern-base/x86/asm.h	2013-04-23 17:51:38.000000000 -0400
 +++ 410kern/x86/asm.h	2013-04-23 17:36:02.000000000 -0400
 @@ -6,40 +6,41 @@
  #ifndef X86_ASM_H
@@ -480,7 +516,7 @@ diff -ruN 410kern-base/x86/asm.h 410kern/x86/asm.h
  
  #endif /* !X86_ASM_H */
 diff -ruN 410kern-base/x86/cr.h 410kern/x86/cr.h
---- 410kern-base/x86/cr.h	2013-04-23 17:29:17.000000000 -0400
+--- 410kern-base/x86/cr.h	2013-04-23 17:51:38.000000000 -0400
 +++ 410kern/x86/cr.h	2013-04-23 17:27:17.000000000 -0400
 @@ -5,6 +5,8 @@
  #ifndef X86_CR_H
@@ -566,7 +602,7 @@ diff -ruN 410kern-base/x86/cr.h 410kern/x86/cr.h
  #endif  /* ! ASSEMBLER */
  
 diff -ruN 410kern-base/x86/eflags.h 410kern/x86/eflags.h
---- 410kern-base/x86/eflags.h	2013-04-23 17:29:17.000000000 -0400
+--- 410kern-base/x86/eflags.h	2013-04-23 17:51:38.000000000 -0400
 +++ 410kern/x86/eflags.h	2013-04-23 17:27:18.000000000 -0400
 @@ -50,10 +50,11 @@
  
@@ -583,7 +619,7 @@ diff -ruN 410kern-base/x86/eflags.h 410kern/x86/eflags.h
  #endif
  
 diff -ruN 410kern-base/x86/interrupt_defines.h 410kern/x86/interrupt_defines.h
---- 410kern-base/x86/interrupt_defines.h	2013-04-23 17:29:17.000000000 -0400
+--- 410kern-base/x86/interrupt_defines.h	2013-04-23 17:51:38.000000000 -0400
 +++ 410kern/x86/interrupt_defines.h	2013-04-23 17:27:18.000000000 -0400
 @@ -6,6 +6,9 @@
  #ifndef _INTERRUPT_DEFINES_H_
@@ -608,7 +644,7 @@ diff -ruN 410kern-base/x86/interrupt_defines.h 410kern/x86/interrupt_defines.h
  
  #endif /* !_INTERRUPT_DEFINES_H_ */
 diff -ruN 410kern-base/x86/keyhelp.h 410kern/x86/keyhelp.h
---- 410kern-base/x86/keyhelp.h	2013-04-23 17:29:17.000000000 -0400
+--- 410kern-base/x86/keyhelp.h	2013-04-23 17:51:38.000000000 -0400
 +++ 410kern/x86/keyhelp.h	2013-04-23 17:28:53.000000000 -0400
 @@ -207,7 +207,7 @@
    /* KHE_APPS, */ /* The "context menu" key */
@@ -620,7 +656,7 @@ diff -ruN 410kern-base/x86/keyhelp.h 410kern/x86/keyhelp.h
  #endif /*!ASSEMBLER*/
  
 diff -ruN 410kern-base/x86/pic.h 410kern/x86/pic.h
---- 410kern-base/x86/pic.h	2013-04-23 17:29:17.000000000 -0400
+--- 410kern-base/x86/pic.h	2013-04-23 17:51:38.000000000 -0400
 +++ 410kern/x86/pic.h	2013-04-23 17:28:30.000000000 -0400
 @@ -213,6 +213,7 @@
  
@@ -631,7 +667,7 @@ diff -ruN 410kern-base/x86/pic.h 410kern/x86/pic.h
  void pic_acknowledge( unsigned char );
  void pic_acknowledge_any_master(void);
 diff -ruN 410kern-base/x86/rtc.h 410kern/x86/rtc.h
---- 410kern-base/x86/rtc.h	2013-04-23 17:29:17.000000000 -0400
+--- 410kern-base/x86/rtc.h	2013-04-23 17:51:38.000000000 -0400
 +++ 410kern/x86/rtc.h	2013-04-23 17:28:34.000000000 -0400
 @@ -11,6 +11,8 @@
  #define RTC_PORT_OUT 0x70
