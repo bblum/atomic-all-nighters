@@ -1,0 +1,655 @@
+diff -ruN 410kern-base/elf/elf_410.h 410kern/elf/elf_410.h
+--- 410kern-base/elf/elf_410.h	2013-04-23 17:29:17.000000000 -0400
++++ 410kern/elf/elf_410.h	2013-04-23 17:26:46.000000000 -0400
+@@ -5,6 +5,7 @@
+ #ifndef _ELF_ELF_410_H_
+ #define _ELF_ELF_410_H_
+ 
++#include <aan.h>
+ #include <elf/elf32.h>
+ 
+ /* --- Simplified ELF header --- */
+@@ -32,8 +33,8 @@
+ /*
+  * elf function prototypes
+  */
+-extern int getbytes( const char *filename, int offset, int size, char *buf);
+-extern int elf_load_helper( simple_elf_t *se_hdr, const char *fname );
+-extern int elf_check_header( const char *fname );
++extern WONT_SLEEP int getbytes( const char *filename, int offset, int size, char *buf);
++extern WONT_SLEEP int elf_load_helper( simple_elf_t *se_hdr, const char *fname );
++extern WONT_SLEEP int elf_check_header( const char *fname );
+ 
+ #endif
+diff -ruN 410kern-base/inc/assert.h 410kern/inc/assert.h
+--- 410kern-base/inc/assert.h	2013-04-23 17:29:17.000000000 -0400
++++ 410kern/inc/assert.h	2013-04-23 17:26:49.000000000 -0400
+@@ -23,7 +23,9 @@
+ #ifndef _ASSERT_H_
+ #define _ASSERT_H_
+ 
+-extern void panic(const char *format, ...);
++#include <aan.h>
++
++extern WONT_SLEEP void panic(const char *format, ...);
+ 
+ #define assert(expression)  \
+ 	((void)((expression) ? 0 : (panic("%s:%u: failed assertion `%s'", \
+diff -ruN 410kern-base/inc/malloc.h 410kern/inc/malloc.h
+--- 410kern-base/inc/malloc.h	2013-04-23 17:29:17.000000000 -0400
++++ 410kern/inc/malloc.h	2013-04-23 17:26:53.000000000 -0400
+@@ -4,13 +4,15 @@
+ #ifndef _MALLOC_WRAPPERS_H_
+ #define _MALLOC_WRAPPERS_H_
+ 
+-void *malloc(size_t size);
+-void *memalign(size_t alignment, size_t size);
+-void *calloc(size_t nelt, size_t eltsize);
+-void *realloc(void *buf, size_t new_size);
+-void free(void *buf);
+-void *smalloc(size_t size);
+-void *smemalign(size_t alignment, size_t size);
+-void sfree(void *buf, size_t size);
++#include <aan.h>
++
++MAY_SLEEP void *malloc(size_t size);
++MAY_SLEEP void *memalign(size_t alignment, size_t size);
++MAY_SLEEP void *calloc(size_t nelt, size_t eltsize);
++MAY_SLEEP void *realloc(void *buf, size_t new_size);
++MAY_SLEEP void free(void *buf);
++MAY_SLEEP void *smalloc(size_t size);
++MAY_SLEEP void *smemalign(size_t alignment, size_t size);
++MAY_SLEEP void sfree(void *buf, size_t size);
+ 
+ #endif /* _MALLOC_WRAPPERS_H_ */
+diff -ruN 410kern-base/lmm/lmm.h 410kern/lmm/lmm.h
+--- 410kern-base/lmm/lmm.h	2013-04-23 17:29:17.000000000 -0400
++++ 410kern/lmm/lmm.h	2013-04-23 17:26:56.000000000 -0400
+@@ -26,6 +26,7 @@
+ #ifndef _MACH_LMM_H_
+ #define _MACH_LMM_H_
+ 
++#include <aan.h>
+ #include <types.h>
+ 
+ /* The contents of this structure is opaque to users.  */
+@@ -41,25 +42,25 @@
+ typedef unsigned int lmm_flags_t;
+ typedef unsigned int lmm_pri_t;
+ 
+-void lmm_init(lmm_t *lmm);
+-void lmm_add_region(lmm_t *lmm, lmm_region_t *lmm_region,
++WONT_SLEEP void lmm_init(lmm_t *lmm);
++WONT_SLEEP void lmm_add_region(lmm_t *lmm, lmm_region_t *lmm_region,
+ 		    void *addr, vm_size_t size,
+ 		    lmm_flags_t flags, lmm_pri_t pri);
+-void lmm_add_free(lmm_t *lmm, void *block, vm_size_t size);
+-void lmm_remove_free(lmm_t *lmm, void *block, vm_size_t size);
+-void *lmm_alloc(lmm_t *lmm, vm_size_t size, lmm_flags_t flags);
+-void *lmm_alloc_aligned(lmm_t *lmm, vm_size_t size, lmm_flags_t flags,
++WONT_SLEEP void lmm_add_free(lmm_t *lmm, void *block, vm_size_t size);
++WONT_SLEEP void lmm_remove_free(lmm_t *lmm, void *block, vm_size_t size);
++MAY_SLEEP void *lmm_alloc(lmm_t *lmm, vm_size_t size, lmm_flags_t flags);
++MAY_SLEEP void *lmm_alloc_aligned(lmm_t *lmm, vm_size_t size, lmm_flags_t flags,
+ 			int align_bits, vm_offset_t align_ofs);
+-void *lmm_alloc_page(lmm_t *lmm, lmm_flags_t flags);
+-void *lmm_alloc_gen(lmm_t *lmm, vm_size_t size, lmm_flags_t flags,
++MAY_SLEEP void *lmm_alloc_page(lmm_t *lmm, lmm_flags_t flags);
++MAY_SLEEP void *lmm_alloc_gen(lmm_t *lmm, vm_size_t size, lmm_flags_t flags,
+ 		    int align_bits, vm_offset_t align_ofs,
+ 		    vm_offset_t bounds_min, vm_offset_t bounds_max);
+-vm_size_t lmm_avail(lmm_t *lmm, lmm_flags_t flags);
+-void lmm_find_free(lmm_t *lmm, vm_offset_t *inout_addr,
++MAY_SLEEP vm_size_t lmm_avail(lmm_t *lmm, lmm_flags_t flags);
++MAY_SLEEP void lmm_find_free(lmm_t *lmm, vm_offset_t *inout_addr,
+ 		   vm_size_t *out_size, lmm_flags_t *out_flags);
+-void lmm_free(lmm_t *lmm, void *block, vm_size_t size);
+-void lmm_free_page(lmm_t *lmm, void *block);
++MAY_SLEEP void lmm_free(lmm_t *lmm, void *block, vm_size_t size);
++MAY_SLEEP void lmm_free_page(lmm_t *lmm, void *block);
+ 
+-void lmm_dump(lmm_t *lmm);
++WONT_SLEEP void lmm_dump(lmm_t *lmm);
+ 
+ #endif /* _MACH_LMM_H_ */
+diff -ruN 410kern-base/malloc/malloc_internal.h 410kern/malloc/malloc_internal.h
+--- 410kern-base/malloc/malloc_internal.h	2013-04-23 17:29:17.000000000 -0400
++++ 410kern/malloc/malloc_internal.h	2013-04-23 17:26:58.000000000 -0400
+@@ -22,18 +22,19 @@
+ #ifndef _410KERN_MALLOC_INTERNALS_H_
+ #define _410KERN_MALLOC_INTERNALS_H_
+ 
++#include <aan.h>
+ #include <types.h>
+ #include <lmm/lmm.h>
+ 
+ extern lmm_t malloc_lmm;
+ 
+-void *_malloc(size_t size);
+-void *_mustmalloc(size_t size);
+-void *_memalign(size_t alignment, size_t size);
+-void *_calloc(size_t nelt, size_t eltsize);
+-void *_mustcalloc(size_t nelt, size_t eltsize);
+-void *_realloc(void *buf, size_t new_size);
+-void _free(void *buf);
++MAY_SLEEP void *_malloc(size_t size);
++MAY_SLEEP void *_mustmalloc(size_t size);
++MAY_SLEEP void *_memalign(size_t alignment, size_t size);
++MAY_SLEEP void *_calloc(size_t nelt, size_t eltsize);
++MAY_SLEEP void *_mustcalloc(size_t nelt, size_t eltsize);
++MAY_SLEEP void *_realloc(void *buf, size_t new_size);
++MAY_SLEEP void _free(void *buf);
+ 
+ /* Alternate version of the standard malloc functions that expect the
+    caller to keep track of the size of allocated chunks.  These
+@@ -44,8 +45,8 @@
+    fragmentation and memory loss.  Chunks allocated with these
+    functions must be freed with sfree() rather than the ordinary
+    free(). */
+-void *_smalloc(size_t size);
+-void *_smemalign(size_t alignment, size_t size);
+-void _sfree(void *buf, size_t size);
++MAY_SLEEP void *_smalloc(size_t size);
++MAY_SLEEP void *_smemalign(size_t alignment, size_t size);
++MAY_SLEEP void _sfree(void *buf, size_t size);
+ 
+ #endif /* _410KERN_MALLOC_H_ */
+diff -ruN 410kern-base/misc/kernel.mk 410kern/misc/kernel.mk
+--- 410kern-base/misc/kernel.mk	2013-04-23 17:29:17.000000000 -0400
++++ 410kern/misc/kernel.mk	2013-04-23 17:26:59.000000000 -0400
+@@ -4,6 +4,6 @@
+ 410K_MISC_OBJS := $(410K_MISC_OBJS:%=$(410KDIR)/misc/%)
+ 
+ ALL_410KOBJS += $(410K_MISC_OBJS)
+-410KCLEANS += $(410KDIR)/libmisc.a
++410KCLEANS += $(410KDIR)/libx86.a
+ 
+ $(410KDIR)/libmisc.a: $(410K_MISC_OBJS)
+diff -ruN 410kern-base/simics/simics.h 410kern/simics/simics.h
+--- 410kern-base/simics/simics.h	2013-04-23 17:29:17.000000000 -0400
++++ 410kern/simics/simics.h	2013-04-23 17:27:00.000000000 -0400
+@@ -24,44 +24,46 @@
+ 
+ #else /* !ASSEMBLER */
+ 
++#include <aan.h>
++
+ /** @brief Calls Simics. Arguments are ebx, ecx, edx. */
+-extern int sim_call(int ebx, ...);
++extern WONT_SLEEP int sim_call(int ebx, ...);
+ 
+ /** @brief Returns whether we are in simics */
+-extern int sim_in_simics(void);
++extern WONT_SLEEP int sim_in_simics(void);
+ 
+ /** @brief Returns machine memory size, from simics */
+-extern int sim_memsize(void);
++extern WONT_SLEEP int sim_memsize(void);
+ 
+ /** @brief Prints a string to the simics console */
+-extern void sim_puts(const char *arg);
++extern WONT_SLEEP void sim_puts(const char *arg);
+ 
+ /** @brief Breakpoint */
+-extern void sim_breakpoint(void);
++extern WONT_SLEEP void sim_breakpoint(void);
+ 
+ /** @brief Halt the simulation */
+-extern void sim_halt(void);
++extern WONT_SLEEP void sim_halt(void);
+ 
+ /** @brief Register a user process with the CS410 simics debugging code */
+-extern void sim_reg_process(void *cr3, const char *fname);
++extern WONT_SLEEP void sim_reg_process(void *cr3, const char *fname);
+ 
+ /** @brief Register a user process as a fork of another.
+  *
+  *  Handy if fork() is oblivious of the program's name.
+  */
+-extern void sim_reg_child(void *child_cr3, void *parent_cr3);
++extern WONT_SLEEP void sim_reg_child(void *child_cr3, void *parent_cr3);
+ 
+ /** @brief Unregister a user process from the CS410 simics debugging code */
+-extern void sim_unreg_process(void *cr3);
++extern WONT_SLEEP void sim_unreg_process(void *cr3);
+ 
+ /** @brief Convenience wrapper around sprintf for simics */
+-extern void sim_printf(const char *fmt, ...) __attribute__((__format__ (__printf__, 1, 2)));
++extern WONT_SLEEP void sim_printf(const char *fmt, ...) __attribute__((__format__ (__printf__, 1, 2)));
+ 
+ /** @brief Notify simics that we have booted.
+  *
+  *  This is done for you in 410kern/entry.c
+  */
+-extern void sim_booted(const char *kern);
++extern WONT_SLEEP void sim_booted(const char *kern);
+ 
+ /* "Compatibility mode" for old code */
+ #define MAGIC_BREAK sim_breakpoint()
+diff -ruN 410kern-base/stdio/stdio.h 410kern/stdio/stdio.h
+--- 410kern-base/stdio/stdio.h	2013-04-23 17:29:17.000000000 -0400
++++ 410kern/stdio/stdio.h	2013-04-23 17:27:02.000000000 -0400
+@@ -22,24 +22,25 @@
+ #define _FLUX_MC_STDIO_H
+ 
+ #ifndef ASSEMBLER
++#include <aan.h>
+ #include <stddef.h>  /* For size_t, NULL */
+ #include <stdarg.h>
+ #include <types.h>
+ 
+-int putchar(int __c);
+-int puts(const char *__str);
+-int printf(const char *__format, ...)
++MAY_SLEEP int putchar(int __c);
++MAY_SLEEP int puts(const char *__str);
++MAY_SLEEP int printf(const char *__format, ...)
+            __attribute__((__format__ (__printf__, 1, 2)));
+-int vprintf(const char *__format, va_list __vl);
+-int sprintf(char *__dest, const char *__format, ...)
++MAY_SLEEP int vprintf(const char *__format, va_list __vl);
++MAY_SLEEP int sprintf(char *__dest, const char *__format, ...)
+             __attribute__((__format__ (__printf__, 2, 3)));
+-int snprintf(char *__dest, size_t __size, const char *__format, ...)
++MAY_SLEEP int snprintf(char *__dest, size_t __size, const char *__format, ...)
+              __attribute__((__format__ (__printf__, 3, 4)));
+-int vsprintf(char *__dest, const char *__format, va_list __vl);
+-int vsnprintf(char *__dest, size_t __size, const char *__format, va_list __vl);
+-int sscanf(const char *__str, const char *__format, ...)
++MAY_SLEEP int vsprintf(char *__dest, const char *__format, va_list __vl);
++MAY_SLEEP int vsnprintf(char *__dest, size_t __size, const char *__format, va_list __vl);
++MAY_SLEEP int sscanf(const char *__str, const char *__format, ...)
+            __attribute__((__format__ (__scanf__, 2, 3)));
+-void hexdump(void *buf, int len);
++MAY_SLEEP void hexdump(void *buf, int len);
+ 
+ #endif  /* !ASSEMBLER */
+ 
+diff -ruN 410kern-base/stdlib/ctype.h 410kern/stdlib/ctype.h
+--- 410kern-base/stdlib/ctype.h	2013-04-23 17:29:17.000000000 -0400
++++ 410kern/stdlib/ctype.h	2013-04-23 17:27:03.000000000 -0400
+@@ -18,20 +18,22 @@
+ #ifndef _FLUX_MC_CTYPE_H_
+ #define _FLUX_MC_CTYPE_H_
+ 
+-int isascii(int c);
+-int iscntrl(int c);
+-int isdigit(int c);
+-int isgraph(int c);
+-int islower(int c);
+-int isprint(int c);
+-int isspace(int c);
+-int isupper(int c);
+-int isxdigit(int c);
+-int isalpha(int c);
+-int isalnum(int c);
+-int ispunct(int c);
+-int toupper(int c);
+-int tolower(int c);
++#include <aan.h>
++
++WONT_SLEEP int isascii(int c);
++WONT_SLEEP int iscntrl(int c);
++WONT_SLEEP int isdigit(int c);
++WONT_SLEEP int isgraph(int c);
++WONT_SLEEP int islower(int c);
++WONT_SLEEP int isprint(int c);
++WONT_SLEEP int isspace(int c);
++WONT_SLEEP int isupper(int c);
++WONT_SLEEP int isxdigit(int c);
++WONT_SLEEP int isalpha(int c);
++WONT_SLEEP int isalnum(int c);
++WONT_SLEEP int ispunct(int c);
++WONT_SLEEP int toupper(int c);
++WONT_SLEEP int tolower(int c);
+ 
+ 
+ #endif	/* _FLUX_MC_CTYPE_H_ */
+diff -ruN 410kern-base/stdlib/stdlib.h 410kern/stdlib/stdlib.h
+--- 410kern-base/stdlib/stdlib.h	2013-04-23 17:29:17.000000000 -0400
++++ 410kern/stdlib/stdlib.h	2013-04-23 17:27:12.000000000 -0400
+@@ -1,23 +1,24 @@
+ #ifndef _STDLIB_H_
+ #define _STDLIB_H_
+ 
++#include <aan.h>
+ #include <stddef.h>  /* For size_t, NULL */
+ #include <malloc.h>  /* "Listen to what the man says" */
+ 
+-long atol(const char *__str);
++WONT_SLEEP long atol(const char *__str);
+ #define atoi(str) ((int)atol(str))
+ 
+-long strtol(const char *__p, char **__out_p, int __base);
+-unsigned long strtoul(const char *__p, char **__out_p, int __base);
++WONT_SLEEP long strtol(const char *__p, char **__out_p, int __base);
++WONT_SLEEP unsigned long strtoul(const char *__p, char **__out_p, int __base);
+ 
+ #define RAND_MAX 0x80000000
+-int rand(void);
+-void srand(unsigned new_seed);
++WONT_SLEEP int rand(void);
++WONT_SLEEP void srand(unsigned new_seed);
+ 
+-int abs(int val);
++WONT_SLEEP int abs(int val);
+ 
+-void qsort(void *a, size_t n, size_t es, int (*cmp)());
++MAY_SLEEP void qsort(void *a, size_t n, size_t es, int (*cmp)() MAY_SLEEP);
+ 
+-void panic(const char *, ...);
++WONT_SLEEP void panic(const char *, ...);
+ 
+ #endif
+diff -ruN 410kern-base/string/string.h 410kern/string/string.h
+--- 410kern-base/string/string.h	2013-04-23 17:29:17.000000000 -0400
++++ 410kern/string/string.h	2013-04-23 17:27:13.000000000 -0400
+@@ -21,37 +21,38 @@
+ #ifndef _FLUX_MC_STRING_H_
+ #define _FLUX_MC_STRING_H_
+ 
++#include <aan.h>
+ #include <types.h>
+ 
+-size_t strlen(const char *__s);
+-char *strcpy(char *__dest, const char *__src);
+-char *strncpy(char *__dest, const char *__src, size_t __n);
+-char *strdup(const char *__s);
+-char *strcat(char *__dest, const char *__src);
+-char *strncat(char *__dest, const char *__src, size_t __n);
+-int strcmp(const char *__a, const char *__b);
+-int strncmp(const char *__a, const char *__b, size_t __n);
+-char *strchr(const char *__s, int __c);
+-char *strrchr(const char *__s, int __c);
+-char *strstr(const char *__haystack, const char *__needle);
+-char *strtok(char *__s, const char *__delim);
+-char *strpbrk(const char *__s1, const char *__s2);
+-size_t strspn(const char *__s1, const char *__s2);
+-size_t strcspn(const char *__s1, const char *__s2);
++WONT_SLEEP size_t strlen(const char *__s);
++WONT_SLEEP char *strcpy(char *__dest, const char *__src);
++WONT_SLEEP char *strncpy(char *__dest, const char *__src, size_t __n);
++WONT_SLEEP char *strdup(const char *__s);
++WONT_SLEEP char *strcat(char *__dest, const char *__src);
++WONT_SLEEP char *strncat(char *__dest, const char *__src, size_t __n);
++WONT_SLEEP int strcmp(const char *__a, const char *__b);
++WONT_SLEEP int strncmp(const char *__a, const char *__b, size_t __n);
++WONT_SLEEP char *strchr(const char *__s, int __c);
++WONT_SLEEP char *strrchr(const char *__s, int __c);
++WONT_SLEEP char *strstr(const char *__haystack, const char *__needle);
++WONT_SLEEP char *strtok(char *__s, const char *__delim);
++WONT_SLEEP char *strpbrk(const char *__s1, const char *__s2);
++WONT_SLEEP size_t strspn(const char *__s1, const char *__s2);
++WONT_SLEEP size_t strcspn(const char *__s1, const char *__s2);
+ 
+-void *memset(void *__to, int __ch, unsigned int __n);
+-int memcmp(const void *s1v, const void *s2v, int size);
++WONT_SLEEP void *memset(void *__to, int __ch, unsigned int __n);
++WONT_SLEEP int memcmp(const void *s1v, const void *s2v, int size);
+ 
+ /* FIXME These are defined here only by tradition... we should move them. */
+-void *memcpy(void *__to, const void *__from, unsigned int __n);
+-void *memmove(void *__to, const void *__from, unsigned int __n);
++WONT_SLEEP void *memcpy(void *__to, const void *__from, unsigned int __n);
++WONT_SLEEP void *memmove(void *__to, const void *__from, unsigned int __n);
+ 
+ /*** BSD compatibility functions; do not use in new code ***/
+ 
+-char *index(const char *__s, int __c);
+-char *rindex(const char *__s, int __c);
++WONT_SLEEP char *index(const char *__s, int __c);
++WONT_SLEEP char *rindex(const char *__s, int __c);
+ 
+-void bcopy(const void *__from, void *__to, unsigned int __n);
+-void bzero(void *__to, unsigned int __n);
++WONT_SLEEP void bcopy(const void *__from, void *__to, unsigned int __n);
++WONT_SLEEP void bzero(void *__to, unsigned int __n);
+ 
+ #endif	/* _FLUX_MC_STRING_H_ */
+diff -ruN 410kern-base/toplevel.mk 410kern/toplevel.mk
+--- 410kern-base/toplevel.mk	2013-04-23 17:29:17.000000000 -0400
++++ 410kern/toplevel.mk	2013-04-23 17:27:14.000000000 -0400
+@@ -16,9 +16,7 @@
+ 		--start-group $(410KLIBS) --end-group
+ 
+ $(FINALTARGETS) : %: $(BUILDDIR)/%.o $(BUILDDIR)/user_apps.o
+-	$(LD) $(KLDFLAGS) -o $@ $^
+-#	$(LD) -T $(410KDIR)/kernel.lds $(KLDFLAGS) -o $@ $^
+-
++	$(LD) -T $(410KDIR)/kernel.lds $(KLDFLAGS) -o $@ $^
+ 
+ $(patsubst %,%.strip,$(FINALTARGETS)) : %.strip : %
+ 	$(OBJCOPY) -g $< $@
+diff -ruN 410kern-base/x86/asm.h 410kern/x86/asm.h
+--- 410kern-base/x86/asm.h	2013-04-23 17:29:17.000000000 -0400
++++ 410kern/x86/asm.h	2013-04-23 17:36:02.000000000 -0400
+@@ -6,40 +6,41 @@
+ #ifndef X86_ASM_H
+ #define X86_ASM_H
+ 
++#include <aan.h>
+ #include <stdint.h>
+ 
+ /** @brief Loads a new gdt */
+-void lgdt(void *gdt, unsigned int limit);
++WONT_SLEEP void lgdt(void *gdt, unsigned int limit);
+ /** @brief Loads a new idt */
+-void lidt(void *idt, unsigned int limit);
++WONT_SLEEP void lidt(void *idt, unsigned int limit);
+ /** @brief Read address of IDT */
+-void *idt_base(void);
++WONT_SLEEP void *idt_base(void);
+ /** @brief Load a segment selector into the task register. */
+-void ltr(unsigned int sel);
++WONT_SLEEP void ltr(unsigned int sel);
+ 
+ /** @brief Disables interrupts */
+-void disable_interrupts();
++ENTER_ATOMIC void disable_interrupts();
+ /** @brief Enables interrupts */
+-void enable_interrupts();
++EXIT_ATOMIC void enable_interrupts();
+ 
+ /** @brief Read from the TSC */
+-uint64_t rdtsc();
++WONT_SLEEP uint64_t rdtsc();
+ 
+ /** @brief Reads 1 byte from given port */
+-uint8_t inb(uint16_t port);
++WONT_SLEEP uint8_t inb(uint16_t port);
+ /** @brief Reads 2 bytes from given port */
+-uint16_t inw(uint16_t port);
++WONT_SLEEP uint16_t inw(uint16_t port);
+ /** @brief Reads 4 bytes from given port */
+-uint32_t ind(uint16_t port);
++WONT_SLEEP uint32_t ind(uint16_t port);
+ 
+ /** @brief Writes 1 byte to target port */
+-void outb(uint16_t port, uint8_t val);
++WONT_SLEEP void outb(uint16_t port, uint8_t val);
+ /** @brief Writes 2 bytes to target port */
+-void outw(uint16_t port, uint16_t val);
++WONT_SLEEP void outw(uint16_t port, uint16_t val);
+ /** @brief Writes 4 bytes to target port */
+-void outd(uint16_t port, uint32_t val);
++WONT_SLEEP void outd(uint16_t port, uint32_t val);
+ 
+ /** @brief Delay 1/8 microsecond */
+-void iodelay(void);
++MAY_SLEEP void iodelay(void);
+ 
+ #endif /* !X86_ASM_H */
+diff -ruN 410kern-base/x86/cr.h 410kern/x86/cr.h
+--- 410kern-base/x86/cr.h	2013-04-23 17:29:17.000000000 -0400
++++ 410kern/x86/cr.h	2013-04-23 17:27:17.000000000 -0400
+@@ -5,6 +5,8 @@
+ #ifndef X86_CR_H
+ #define X86_CR_H
+ 
++#include <aan.h>
++
+ /* These are #defines so that they may be used in assembler. */
+ 
+ #define CR0_PE  (1 << 0)    /**< Protection Enable */
+@@ -58,49 +60,49 @@
+  *
+  * @note Use rarely.
+  */
+-uint32_t get_cr0();
++WONT_SLEEP uint32_t get_cr0();
+ 
+ /** Get CR2
+  *
+  * @note Use when appropriate.
+  */
+-uint32_t get_cr2();
++WONT_SLEEP uint32_t get_cr2();
+ 
+ /** Get CR3, the root of the paging hierarchy.
+  *
+  * @note Use when appropriate.
+  */
+-uint32_t get_cr3();
++WONT_SLEEP uint32_t get_cr3();
+ 
+ /** Get CR4.
+  *
+  * @note Use rarely.
+  */
+-uint32_t get_cr4();
++WONT_SLEEP uint32_t get_cr4();
+ 
+ /** Set CR0.
+  *
+  * @note Use very rarely.
+  */
+-void set_cr0(uint32_t);
++WONT_SLEEP void set_cr0(uint32_t x);
+ 
+ /** Set CR2.
+  *
+  * @note Use very rarely or not at all.
+  */
+-void set_cr2(uint32_t);
++WONT_SLEEP void set_cr2(uint32_t x);
+ 
+ /** Set CR3.
+  *
+  * @note This operation implicitly flushes the TLB.
+  */
+-void set_cr3(uint32_t);
++WONT_SLEEP void set_cr3(uint32_t x);
+ 
+ /** Set CR4.
+  *
+  * @note Use very rarely.
+  */
+-void set_cr4(uint32_t);
++WONT_SLEEP void set_cr4(uint32_t x);
+ 
+ /*
+  * ESP0 is not a register.  But we can pretend!
+@@ -110,13 +112,13 @@
+  *
+  * @note Use when appropriate.
+  */
+-uint32_t get_esp0(void);
++WONT_SLEEP uint32_t get_esp0(void);
+ 
+ /** Set ESP0.
+  *
+  * @note Use when appropriate.
+  */
+-void set_esp0(uint32_t);
++WONT_SLEEP void set_esp0(uint32_t x);
+ 
+ #endif  /* ! ASSEMBLER */
+ 
+diff -ruN 410kern-base/x86/eflags.h 410kern/x86/eflags.h
+--- 410kern-base/x86/eflags.h	2013-04-23 17:29:17.000000000 -0400
++++ 410kern/x86/eflags.h	2013-04-23 17:27:18.000000000 -0400
+@@ -50,10 +50,11 @@
+ 
+ #ifndef ASSEMBLER
+ 
++#include <aan.h>
+ #include <stdint.h>
+ 
+-uint32_t get_eflags(void);
+-void set_eflags(uint32_t);
++WONT_SLEEP uint32_t get_eflags(void);
++WONT_SLEEP void set_eflags(uint32_t x);
+ 
+ #endif
+ 
+diff -ruN 410kern-base/x86/interrupt_defines.h 410kern/x86/interrupt_defines.h
+--- 410kern-base/x86/interrupt_defines.h	2013-04-23 17:29:17.000000000 -0400
++++ 410kern/x86/interrupt_defines.h	2013-04-23 17:27:18.000000000 -0400
+@@ -6,6 +6,9 @@
+ #ifndef _INTERRUPT_DEFINES_H_
+ #define _INTERRUPT_DEFINES_H_
+ 
++#include <aan.h>
++#include <x86/asm.h>
++
+ /* import "everything" from our backer */
+ #define X86_PIC_DEFINITIONS
+ #include <x86/pic.h>
+@@ -15,6 +18,11 @@
+ 
+ #ifndef ASSEMBLER
+ void interrupt_setup(void);
++
++static inline EXIT_ATOMIC_NESTED void acknowledge_interrupt() {
++	    outb(INT_CTL_PORT, INT_ACK_CURRENT);
++}
++
+ #endif /* ASSEMBLER */
+ 
+ #endif /* !_INTERRUPT_DEFINES_H_ */
+diff -ruN 410kern-base/x86/keyhelp.h 410kern/x86/keyhelp.h
+--- 410kern-base/x86/keyhelp.h	2013-04-23 17:29:17.000000000 -0400
++++ 410kern/x86/keyhelp.h	2013-04-23 17:28:53.000000000 -0400
+@@ -207,7 +207,7 @@
+   /* KHE_APPS, */ /* The "context menu" key */
+ };
+ 
+-kh_type process_scancode(int keypress);
++WONT_SLEEP kh_type process_scancode(int keypress);
+ 
+ #endif /*!ASSEMBLER*/
+ 
+diff -ruN 410kern-base/x86/pic.h 410kern/x86/pic.h
+--- 410kern-base/x86/pic.h	2013-04-23 17:29:17.000000000 -0400
++++ 410kern/x86/pic.h	2013-04-23 17:28:30.000000000 -0400
+@@ -213,6 +213,7 @@
+ 
+ #ifndef ASSEMBLER
+ 
++/* I don't know... if you have to annotate these, let me know. -- Ben */
+ void pic_init( unsigned char , unsigned char );
+ void pic_acknowledge( unsigned char );
+ void pic_acknowledge_any_master(void);
+diff -ruN 410kern-base/x86/rtc.h 410kern/x86/rtc.h
+--- 410kern-base/x86/rtc.h	2013-04-23 17:29:17.000000000 -0400
++++ 410kern/x86/rtc.h	2013-04-23 17:28:34.000000000 -0400
+@@ -11,6 +11,8 @@
+ #define RTC_PORT_OUT 0x70
+ #define RTC_PORT_IN  0x71
+ 
++#include <aan.h>
++
+ typedef struct time {
+   int year;
+   int month;
+@@ -20,8 +22,8 @@
+   int second;
+ } time_t;
+ 
+-void gettime(time_t *time);
++MAY_SLEEP void gettime(time_t *time);
+ 
+-void printtime();
++MAY_SLEEP void printtime();
+ 
+ #endif /* _RTC_H_ */
