@@ -1,1 +1,1 @@
--I 410kern/ -I 410kern/boot/ -I 410kern/elf/ -I 410kern/inc/ -I 410kern/lmm/ -I 410kern/malloc/ -I 410kern/misc/ -I 410kern/RNG/ -I 410kern/simics/ -I 410kern/smp/ -I 410kern/stdio/ -I 410kern/stdlib/ -I 410kern/string/ -I 410kern/x86/ -I kern/inc
+-I 410kern/ -I 410kern/boot/ -I 410kern/elf/ -I 410kern/inc/ -I 410kern/lmm/ -I 410kern/malloc/ -I 410kern/misc/ -I 410kern/RNG/ -I 410kern/simics/ -I 410kern/smp/ -I 410kern/stdio/ -I 410kern/stdlib/ -I 410kern/string/ -I 410kern/x86/ -I kern/inc -I spec/
