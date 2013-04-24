@@ -499,6 +499,8 @@ checkFunDef (CFunDef specs declr oldstyle body nobe) =
                    Just told -> verifyAssign nobe True told t
                    Nothing -> addType nobe (VarName name) t
         addFunc Nothing t = return ()
+        isMagicType (Arrow _ _ _ (Just (Annotation (_,_,b)))) = b
+        isMagicType _ = False
     in do (t0',a',_) <- checkDeclSpecs nobe specs -- 'typedef' never on functions
           -- do add posible args to context.
           oldstate <- getState
@@ -510,6 +512,13 @@ checkFunDef (CFunDef specs declr oldstyle body nobe) =
           -- this has to be done twice, for the function to be scoped inside
           -- itself and also after dropping the type mappings from inside.
           addFunc name' t
+          when (not $ isMagicType t) $ traverseFunctionBody name' a'
+          -- restore old context and types mapping
+          restoreState oldstate
+          -- second time - make this function be scoped in future functions
+          -- TODO: what about pre-declared functions
+          addFunc name' t
+    where traverseFunctionBody name' a' = do
           -- traverse function body; save old context in case of nested function
           g <- case a' of Just a -> return $ entryContext a
                           Nothing -> do warn nobe "missing annotation" [name']
@@ -535,11 +544,6 @@ checkFunDef (CFunDef specs declr oldstyle body nobe) =
                              (gnew:gs)
                      modify (\s -> s { ends = rest })
               _ -> error "inconsistent ends stack at function end"
-          -- restore old context and types mapping
-          restoreState oldstate
-          -- second time - make this function be scoped in future functions
-          -- TODO: what about pre-declared functions
-          addFunc name' t
 
 checkDecl :: Bool -> CDecl -> State Checker [(Maybe Ident, Type)]
 checkDecl remember (CDecl specs noobs nobe) =
