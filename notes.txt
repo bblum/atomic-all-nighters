@@ -1,0 +1,48 @@
+group-00
+	start-time 1322
+	had to change do { } while (0) macros to static inline functions
+	need an EXIT_NESTED_AND_SLEEP / EXIT_AND_SLEEP
+		hack around to change by making disable interrupts nested
+	found missing argument in func prototype
+		"pcb_t* new_child_process()"
+		"general_fault_handler()"
+		reap_exited_process() status_ptr
+	argh, sanity.c is deadcode
+	
+	false positive: printf os shutting down with interrupts off
+
+	pause time 1514
+	resume time 1528
+
+	need a magic annotation for the enable interrupts
+
+	BUG #1: key handler takes a mutex before acknowledging interrupt
+	BUG #2: add_to_runnable_tid doesn't reenable in all cases
+
+	TRUSTMEs used (except enums and casting):
+		DISABLE/ENABLE_INTERRUPTS, kernel_main, acknowledge_interrupt
+
+	pause time 1558
+	resume time 1635
+	end 1642
+
+group-01
+	start-time 2053
+
+	AAN needs to parse enums to get idents!
+	false negative: sem_signal in kbd handler after EXIT_ATOMIC readchar
+		but before acknowledge_interrupt
+	hafta use a trustme in sem_signal; a better tool could cope
+
+	BUG: schedule(DESCHEDULE) leaks interrupts
+
+	False positive: mutex_unlock() after disable_interrupts() in deschedule
+
+	TRUSTMEs used (except enums and casting):
+		putbytes, sem_signal, kernel_main, acknowledge_interrupt
+
+	stop-time 2255
+
+mkdir /tmp/shit; for i in `find | grep '\.c$\|\.h$'`; do echo "#include
+<aan.h>" >> /tmp/shit/`basename $i`; cat $i >> /tmp/shit/`basename $i`; mv
+/tmp/shit/`basename $i` $i; done; rmdir /tmp/shit
