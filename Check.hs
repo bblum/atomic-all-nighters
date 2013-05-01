@@ -201,11 +201,18 @@ doReturn nobe =
            [] -> error "attempt to return outside of a function??"
        rs <- returned <$> get
        case rs of
-           ((True:r1s):rs') -> do -- This is possible + legal with labels/gotos.
-                                  -- warn nobe "double return" emptyMsg
+           ((True:r1s):rs') -> do warn nobe "double return" emptyMsg
                                   modify (\s -> s { returned = (True:r1s):rs' })
            ((False:r1s):rs') -> modify (\s -> s { returned = (True:r1s):rs' })
-           _ -> error "inconsistent returned stack"
+           _ -> error "inconsistent returned stack (in doReturn)"
+
+dontReturn :: State Checker ()
+dontReturn =
+    do rs <- returned <$> get
+       case rs of ((True:r1s):rs') ->
+                      modify (\s -> s { returned = (False:r1s):rs' })
+                  ((False:r1s):rs') -> return ()
+                  _ -> error "inconsistent returned stack (in dontReturn)"
 
 checkMergeContexts :: NodeInfo -> Context -> [Context] -> State Checker ()
 checkMergeContexts nobe g0 gs =
@@ -251,6 +258,7 @@ meetLabel nobe g0 name =
            Just (Left gs) ->
                do let g = minimum $ g0:gs
                   mergeContexts nobe g0 gs
+                  dontReturn -- this block will no longer necesarily 'return'
                   modify (\s -> s { labels = Map.insert name (Right g) ls})
            Just (Right _) ->
                do err nobe "meeting an already-met label (duplicate label?)"
