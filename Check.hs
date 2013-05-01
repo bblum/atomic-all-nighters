@@ -164,7 +164,8 @@ exitIf nobe =
     do bs <- branches <$> get
        rs <- returned <$> get
        case (bs,rs) of
-           (b:bs', (r@[case1,case2]):(r1:r1s):rs') ->
+           --- Bugfix: the cases will be in opposite order, of course.
+           (b:bs', (r@[case2,case1]):(r1:r1s):rs') ->
                do modify (\s -> s { branches = bs',
                                     returned = ((and $ r1:r):r1s):rs' })
                   return (case1,case2)
