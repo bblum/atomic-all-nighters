@@ -200,7 +200,8 @@ doReturn nobe =
            [] -> error "attempt to return outside of a function??"
        rs <- returned <$> get
        case rs of
-           ((True:r1s):rs') -> do warn nobe "double return" emptyMsg
+           ((True:r1s):rs') -> do -- This is possible + legal with labels/gotos.
+                                  -- warn nobe "double return" emptyMsg
                                   modify (\s -> s { returned = (True:r1s):rs' })
            ((False:r1s):rs') -> modify (\s -> s { returned = (True:r1s):rs' })
            _ -> error "inconsistent returned stack"
@@ -754,8 +755,8 @@ checkDesignator t0 (CMemberDesig name nobe) =
            [M "type" $ show t0, M "member" $ show name]
        return Base
 
--- Statemence.
-checkStat :: CStat -> State Checker Type
+-- Statemence. The bool indicates if this statement returned or not.
+checkStat :: CStat -> State Checker (Type, Bool)
 checkStat (CLabel name s attrs nobe) =
     do g0 <- getContext
        meetLabel nobe g0 name
@@ -763,27 +764,27 @@ checkStat (CLabel name s attrs nobe) =
 checkStat (CCase e s nobe) =
     do g0 <- enterCase
        checkExpr_ e
-       checkStat_ s
+       (_, r) <- checkStat s
        exitCase g0
-       return Base
+       return (Base, r)
 checkStat (CCases e1 e2 s nobe) =
     do g0 <- enterCase
        checkExpr_ e1
        checkExpr_ e2
-       checkStat_ s
+       (_, r) <- checkStat s
        exitCase g0
-       return Base
+       return (Base, r)
 checkStat (CDefault s nobe) =
     do g0 <- enterCase
-       checkStat_ s
+       (_, r) <- checkStat s
        exitCase g0
-       return Base
-checkStat (CExpr e' nobe) = maybe (return Base) checkExpr e'
+       return (Base, r)
+checkStat (CExpr e' nobe) = (, False) <$> maybe (return Base) checkExpr e'
 checkStat (CCompound labels blox nobe) =
     do ts <- getTypes
-       mapM_ checkBlockItem blox
+       r <- foldM checkBlockItem False blox
        setTypes ts
-       return Base
+       return (Base, r)
 checkStat (CIf e s1 s2' nobe) =
     do checkExpr_ e
        enterIf
@@ -794,32 +795,32 @@ checkStat (CIf e s1 s2' nobe) =
        maybe (return ()) checkStat_ s2'
        g2 <- exitBranch g0
        (returned1,returned2) <- exitIf nobe -- See which branches did return or not.
-       case (returned1,returned2) of
-           (False,False) -> mergeContexts nobe g1 [g2]
-           (True,False) -> setContext g2
-           (False,True) -> setContext g1
-           _ -> return () -- Means we returned wholesale.
-       return Base
+       r <- case (returned1,returned2) of
+           (False,False) -> mergeContexts nobe g1 [g2] >> return False
+           (True,False) -> setContext g2 >> return False
+           (False,True) -> setContext g1 >> return False
+           _ -> return True -- Means we returned wholesale.
+       return (Base, r)
 checkStat (CSwitch e s nobe) =
     do checkExpr_ e
        g0 <- getContext
        enterSwitch
-       checkStat_ s
+       (_, r) <- checkStat s
        gs <- exitSwitch
        mergeContexts nobe g0 gs
-       return Base
+       return (Base, r)
 checkStat (CWhile e s isDoWhile nobe) =
     do g0 <- getContext
        when (not isDoWhile) $ checkExpr_ e
        enterLoop
-       checkStat_ s
+       (_, r) <- checkStat s
        (bs,cs) <- exitLoop
        when (isDoWhile) $ checkExpr_ e
        g <- getContext
        checkMergeContexts nobe g0 cs -- continues go backwards
        checkBackEdge nobe g0 g
        mergeContexts nobe g bs -- breaks go forwards
-       return Base
+       return (Base, r)
 checkStat (CFor e1'' e2' e3' s nobe) =
     do ts <- getTypes
        case e1'' of
@@ -829,7 +830,7 @@ checkStat (CFor e1'' e2' e3' s nobe) =
        g0 <- getContext
        maybe (return ()) checkExpr_ e2'
        enterLoop
-       checkStat_ s
+       (_, r) <- checkStat s
        (bs,cs) <- exitLoop
        g1 <- getContext
        mergeContexts nobe g1 cs -- continues go forwards
@@ -837,32 +838,37 @@ checkStat (CFor e1'' e2' e3' s nobe) =
        g2 <- getContext
        checkBackEdge nobe g0 g2
        mergeContexts nobe g2 bs -- breaks go even more forwards
-       return Base
+       return (Base, r)
 checkStat (CGoto name nobe) =
     do g <- getContext
        gotoLabel nobe g name
-       return Base
+       return (Base, False)
 checkStat (CGotoPtr e nobe) =
     do warn nobe "dynamic pointer goto being ignored." emptyMsg
        checkExpr_ e
-       return Base
-checkStat (CCont nobe) = continueLoop >> return Base
-checkStat (CBreak nobe) = breakLoop >> return Base
+       return (Base, False)
+checkStat (CCont nobe) = continueLoop >> return (Base, False)
+checkStat (CBreak nobe) = breakLoop >> return (Base, False)
 checkStat (CReturn e' nobe) =
     do t <- maybe (return Base) checkExpr e'
        doReturn nobe
-       return t
-checkStat (CAsm asm nobe) = checkAsmStmt asm >> return Base
+       return (t, True)
+checkStat (CAsm asm nobe) = checkAsmStmt asm >> return (Base, False)
 
 checkStat_ s = checkStat s >> return ()
 
-checkBlockItem :: CBlockItem -> State Checker ()
-checkBlockItem (CBlockStmt s) = checkStat_ s
-checkBlockItem (CBlockDecl d) = checkDecl_ d
-checkBlockItem (CNestedFunDef f) =
+checkBlockItem :: Bool -> CBlockItem -> State Checker Bool
+checkBlockItem returned (CNestedFunDef f) =
     do s <- getState
        checkFunDef f
        restoreState s
+       return returned
+checkBlockItem True x@(CBlockStmt (CLabel _ _ _ _)) = checkBlockItem False x
+checkBlockItem True _ = return True
+checkBlockItem returned (CBlockStmt s) =
+    do (_, r) <- checkStat s
+       return $ returned || r
+checkBlockItem returned (CBlockDecl d) = do checkDecl_ d; return returned
 
 checkAsmStmt :: CAsmStmt -> State Checker ()
 checkAsmStmt (CAsmStmt qual asm outops inops clobbers nobe) =
@@ -1021,7 +1027,11 @@ checkExpr (CCompoundLit d inits nobe) =
     do t <- snd <$> checkOneDecl d
        mapM (checkInitListElem nobe t) inits
        return t
-checkExpr (CStatExpr s nobe) = checkStat s
+checkExpr (CStatExpr s nobe) =
+    do (t, r) <- checkStat s
+       when r $
+           warn nobe "return inside statement-expression not supported" emptyMsg
+       return t
 checkExpr (CLabAddrExpr name nobe) = return Base
 checkExpr (CBuiltinExpr b) = return Base
 
