@@ -38,7 +38,7 @@ EXIT_ATOMIC void enable_interrupts();
 
 int EXIT_ATOMIC main() {
 	// This should fail.
-	// IGNORE: Apparent bug in Language.C? Putting braces around works.
+	// AAN-IGNORE: Apparent bug in Language.C? Putting braces around works.
 	switch (x) {
 		case 0:
 			enable_interrupts();

@@ -5,7 +5,7 @@ DIR=~/atomic-all-nighters
 RV=0
 
 for i in $@; do
-	if grep IGNORE $i >/dev/null 2>/dev/null; then
+	if grep AAN-IGNORE $i >/dev/null 2>/dev/null; then
 		echo -e "\033[01;33m$i:\033[80D\033[64CIgnored\033[00m"
 		continue
 	fi
