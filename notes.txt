@@ -25,6 +25,8 @@ group-00
 	pause time 1558
 	resume time 1635
 	end 1642
+	start 1408
+	end 1412
 
 group-01
 	start-time 2053
@@ -42,7 +44,70 @@ group-01
 		putbytes, sem_signal, kernel_main, acknowledge_interrupt
 
 	stop-time 2255
+	start-time 1418
+	stop-time 1422
 
-mkdir /tmp/shit; for i in `find | grep '\.c$\|\.h$'`; do echo "#include
-<aan.h>" >> /tmp/shit/`basename $i`; cat $i >> /tmp/shit/`basename $i`; mv
-/tmp/shit/`basename $i` $i; done; rmdir /tmp/shit
+group-02
+	start-time 1610
+	stop 1615
+	start 1619
+	stop 1621
+	start 1622
+	stop 1626
+	start 1632
+	stop 1634
+	start 1638
+	stop 1653
+	start 1721
+	stop 1724
+	start 1725
+	stop 1729
+	start 1732
+	stop 1738
+	start 1854
+	stop 1914
+	start 1925
+	stop 1927
+	start 2040
+	stop 2059
+	start 2106
+	stop 2131
+	start 2145
+	stop 2153
+	start 2226
+	stop 2228
+
+	BUG (moderate?): if !intr_ok, kbd forgets to return
+
+	BUG(severe): sleep_pop in timer handler unsafe
+
+	false positive in sleep.c/sleep.c (2 errors)
+		sleep_add can return with different contexts intentionally
+	false positive in readline (2 warnings + 2 errors)
+		cpu_relax returns with interrupts off intentionally just here
+
+	start 1423
+	stop 1430
+
+group-03
+	start-time 1034
+	stop-time 1055
+	start-time 1119
+	stop-time 1217
+	start-time 1219
+	stop-time 1220
+	start-time 1432
+	stop-time 1433
+	start-time 1431
+	stop-time 1437
+
+	false positive in readline (1 warning, 1 error)
+		run_descheduled has an if statement that's always true
+	bugs 0
+	
+
+mkdir /tmp/shit; for i in `find | grep '\.c$\|\.h$'`; do echo "#include <aan.h>" >> /tmp/shit/`basename $i`; cat $i >> /tmp/shit/`basename $i`; mv /tmp/shit/`basename $i` $i; done; rmdir /tmp/shit
+
+
+current stack: group-01 scheduler.c has an error that disappears after the
+if-return3 bugfix.
