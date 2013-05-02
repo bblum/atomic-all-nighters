@@ -537,9 +537,14 @@ checkFunDef (CFunDef specs declr oldstyle body nobe) =
           gold <- getContext
           setContext g
           modify (\s -> s { returned = [False]:(returned s), ends = []:(ends s)})
-          checkStat body
+          (_, r) <- checkStat body
+          when (not r) $ doReturn nobe
           -- check exit context against advertised effect
-          gnew <- getContext
+          endings <- ends <$> get
+          let gnew = case endings of
+                         ((g:_):_) -> g
+                         ([]:_) -> error "no return path in function?"
+                         [] -> error "no return stack inside function?"
           case a' of Just a ->
                          when (effect a g /= Just gnew) $
                              err nobe "exit context != advertised effect"
