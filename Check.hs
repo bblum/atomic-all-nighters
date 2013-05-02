@@ -551,7 +551,6 @@ checkFunDef (CFunDef specs declr oldstyle body nobe) =
                                  [M "entry context" g, M "exit context" gnew]
                      Nothing -> return ()
           -- check all returned contexts against each other
-          endings <- ends <$> get
           case endings of
               (gs:rest) ->
                   do when (not $ all (== gnew) gs) $
@@ -822,7 +821,8 @@ checkStat (CSwitch e s nobe) =
        (_, r) <- checkStat s
        gs <- exitSwitch
        mergeContexts nobe g0 gs
-       return (Base, r)
+       --- XXX: A bit of a hack. Hard to tell when a switch returns.
+       return (Base, False) -- r)
 checkStat (CWhile e s isDoWhile nobe) =
     do g0 <- getContext
        when (not isDoWhile) $ checkExpr_ e
