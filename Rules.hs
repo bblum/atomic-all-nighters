@@ -72,6 +72,7 @@ disjoin = merge max
 
 -- Gives the most restrictive context that a function may be called from.
 entryContext :: Annotation -> Context
+entryContext (Annotation (Rule Infinity, _, _)) = Nested 10000
 entryContext (Annotation (Rule r, _, _)) = r
 
 -- Gives a default context to start checking function bodies.
