@@ -11,3 +11,7 @@ aan: bin/aan
 bin/aan: Main.hs Check.hs Rules.hs Attributes.hs
 	mkdir -p bin
 	$(HSMAKE) $< -o $@
+
+check: aan aan-wrap.sh aan-fail-wrap.sh
+		./aan-wrap.sh tests/pass/*.c
+		./aan-fail-wrap.sh tests/fail/*.c
