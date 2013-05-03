@@ -924,8 +924,8 @@ checkExpr (CBinary _ e1 e2 nobe) =
        t2 <- checkExpr e2
        case (t1,t2) of
            (Pointer t1', Pointer t2') -> return Base
-           (Pointer t1', _) -> return t1'
-           (_, Pointer t2') -> return t2'
+           (Pointer t1', _) -> return $ Pointer t1'
+           (_, Pointer t2') -> return $ Pointer t2'
            (_, _) -> return Base
 checkExpr (CCast d e nobe) =
     do t1 <- snd <$> checkOneDecl d
