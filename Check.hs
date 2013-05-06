@@ -7,7 +7,7 @@ import Control.Applicative ((<$>))
 import Control.Monad.State
 import qualified Data.Traversable as T (sequence,mapM)
 import qualified Data.Map as Map
-import Data.List (intercalate)
+import Data.List (intercalate,break)
 import qualified Data.Foldable as F (any)
 import Data.Maybe (mapMaybe,catMaybes,fromMaybe,isNothing,fromJust)
 import Language.C.Data.Ident (Ident,builtinIdent)
@@ -818,11 +818,23 @@ checkStat (CSwitch e s nobe) =
     do checkExpr_ e
        g0 <- getContext
        enterSwitch
-       (_, r) <- checkStat s
+       (_, r) <- checkStat $ fixSwitchBody s
        gs <- exitSwitch
        mergeContexts nobe g0 gs
-       --- XXX: A bit of a hack. Hard to tell when a switch returns.
+       -- FIXME: To tell if a switch returns, check for a default...
        return (Base, False) -- r)
+    -- Work-around language.c bug -- "case e: s1; s2;" != "case e: { s1; s2; }"
+    where fixSwitchBody (CCompound labels blox nobe) =
+              CCompound labels (fixSwitchBlock blox) nobe
+          fixSwitchBody s = s
+          fixSwitchBlock [] = []
+          fixSwitchBlock ((CBlockStmt (CCase e s nobe)):rest) =
+              let nextCase (CBlockStmt (CCase _ _ _)) = True
+                  nextCase _ = False
+                  (caseBody,actualRest) = break nextCase rest
+                  newBody = CCompound [] ((CBlockStmt s):caseBody) nobe
+              in (CBlockStmt (CCase e newBody nobe)):(fixSwitchBlock actualRest)
+          fixSwitchBlock (x:rest) = x:(fixSwitchBlock rest)
 checkStat (CWhile e s isDoWhile nobe) =
     do g0 <- getContext
        when (not isDoWhile) $ checkExpr_ e
