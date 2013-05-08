@@ -105,9 +105,51 @@ group-03
 		run_descheduled has an if statement that's always true
 	bugs 0
 	
+group-04
+	start-time 1244
+	stop-time 1335
+
+	aan misfeature: anonymous unions
+	aan misfeature: labels leak interfunction
+
+	start-time 2043
+	stop-time 2121
+
+	BUG(severe): kmutex_lock after disable_interrupts in vanish can U-A-F
+	false positives 0
+
+group-06
+	start-time 1058
+	stop-time 1144
+
+	BUG(severe): append_tcb mutex_lock in context switch returns with
+	interrupts on
+	false positives 0
+
+	refactor a "if (c) disable; ... if (c) enable;" pattern
+
+group-07
+	start-time 1251
+	stop-time 1357
+	start-time 1740
+
+	false positive: both enable_interrupts and enable_preempt
+	false positive (2 errors): interrupts were off needlessly in wait
+	false positive (3 errors): interrupts were off needlessly in run_reaper
+	false positive (1 error): atomic deschedule relies on internal vm impl details
+
+	end-time 1759
+
+	BUG: two waiting threads can race on a write_to_user schedule
+
+group-08
+	start-time 1801
+	stop-time 1855
+	start-time 1025
+	stop-time 1035
+
+	false positive (1 warning): conditional disable interrupts OK in
+	BUG(minor): schedule_specific_thread leaks interrupts
+	BUG(minor): deschedule_current_thread leaks interrupts
 
 mkdir /tmp/shit; for i in `find | grep '\.c$\|\.h$'`; do echo "#include <aan.h>" >> /tmp/shit/`basename $i`; cat $i >> /tmp/shit/`basename $i`; mv /tmp/shit/`basename $i` $i; done; rmdir /tmp/shit
-
-
-current stack: group-01 scheduler.c has an error that disappears after the
-if-return3 bugfix.
