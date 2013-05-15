@@ -8,7 +8,7 @@ group-00
 		"general_fault_handler()"
 		reap_exited_process() status_ptr
 	argh, sanity.c is deadcode
-	
+
 	false positive: printf os shutting down with interrupts off
 
 	pause time 1514
@@ -104,7 +104,7 @@ group-03
 	false positive in readline (1 warning, 1 error)
 		run_descheduled has an if statement that's always true
 	bugs 0
-	
+
 group-04
 	start-time 1244
 	stop-time 1335
@@ -140,7 +140,7 @@ group-07
 
 	end-time 1759
 
-	BUG: two waiting threads can race on a write_to_user schedule
+	BUG(severe): two waiting threads can race on a write_to_user schedule
 
 group-08
 	start-time 1801
@@ -151,5 +151,35 @@ group-08
 	false positive (1 warning): conditional disable interrupts OK in
 	BUG(minor): schedule_specific_thread leaks interrupts
 	BUG(minor): deschedule_current_thread leaks interrupts
+
+group-09
+	start-time 1221
+	stop-time 1252
+	start-time 1350
+	stop-time 1411
+	start-time 1413
+	stop-time 1429
+	start-time 1446
+	stop-time 1451
+	start-time 1507
+	stop-time 1517
+	false positive (1 warning, 16 errors): always-true if statement in PF
+
+group-10
+	start-time 1327
+	stop-time 1330
+	start-time 1640
+	stop-time 1708
+	start-time 1417
+	stop-time 1442
+	start-time 1500
+	stop-time 1510
+
+	// can't count this one :(
+	// BUG(severe): malloc wrappers not protected by locks or anything at all
+	false positive (1 error): free_kstack called with interrupts off even
+	though that's okay
+
+group-11
 
 mkdir /tmp/shit; for i in `find | grep '\.c$\|\.h$'`; do echo "#include <aan.h>" >> /tmp/shit/`basename $i`; cat $i >> /tmp/shit/`basename $i`; mv /tmp/shit/`basename $i` $i; done; rmdir /tmp/shit
